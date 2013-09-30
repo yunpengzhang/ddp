@@ -1,0 +1,60 @@
+VAR :: localPasswd :: `echo "tdbank@2013"`
+
+### scp local to ssh test
+## file
+LOCAL_CMD :: `echo "a1" > /tmp/{#sshIP#}_abcdefg`
+SCP_LOCAL_TO_SSH :: LOCAL_PATH :: "/tmp/{#sshIP#}_abcdefg" :: SSH_HOST_PATH :: "/tmp" :: LOCAL_INTF :: "eth1"
+ASSERT :: "a1" :: `cat /tmp/{#sshIP#}_abcdefg`
+
+LOCAL_CMD :: `echo "a2" > /tmp/{#sshIP#}_abcdefg`
+SCP_LOCAL_TO_SSH_PUSH_PULL :: LOCAL_PATH :: "/tmp/{#sshIP#}_abcdefg" :: SSH_HOST_PATH :: "/tmp" :: LOCAL_INTF :: "eth1"
+ASSERT :: "a2" :: `cat /tmp/{#sshIP#}_abcdefg`
+
+LOCAL_CMD :: `echo "a3" > /tmp/{#sshIP#}_abcdefg`
+SCP_LOCAL_TO_SSH_PULL_PUSH :: LOCAL_PATH :: "/tmp/{#sshIP#}_abcdefg" :: SSH_HOST_PATH :: "/tmp" :: LOCAL_INTF :: "eth1" :: LOCAL_PASSWD :: "{#localPasswd#}"
+ASSERT :: "a3" :: `cat /tmp/{#sshIP#}_abcdefg`
+
+
+LOCAL_CMD :: `echo "a33" > /tmp/{#sshIP#}_abcdefg`
+SCP_LOCAL_TO_SSH_PULL_PUSH :: LOCAL_PATH :: "/tmp/{#sshIP#}_abcdefg" :: SSH_HOST_PATH :: "/tmp" :: LOCAL_INTF :: "eth1"
+ASSERT :: "a33" :: `cat /tmp/{#sshIP#}_abcdefg`
+
+LOCAL_CMD :: `rm /tmp/{#sshIP#}_abcdefg -f`
+`rm /tmp/{#sshIP#}_abcdefg -f`
+
+### direcotry
+LOCAL_CMD :: `mkdir -p /tmp/{#sshIP#}_aabbcc`
+LOCAL_CMD :: `echo "a4" > /tmp/{#sshIP#}_aabbcc/a4`
+SCP_LOCAL_TO_SSH :: LOCAL_PATH :: "/tmp/{#sshIP#}_aabbcc" :: SSH_HOST_PATH :: "/tmp" :: LOCAL_INTF :: "eth1" 
+`cd /tmp/{#sshIP#}_aabbcc`
+ASSERT :: "a4" :: `cat a4`
+
+LOCAL_CMD :: `echo "a5" > /tmp/{#sshIP#}_aabbcc/a5`
+SCP_LOCAL_TO_SSH_PUSH_PULL :: LOCAL_PATH :: "/tmp/{#sshIP#}_aabbcc" :: SSH_HOST_PATH :: "/tmp" :: LOCAL_INTF :: "eth1" 
+`cd /tmp/{#sshIP#}_aabbcc`
+ASSERT :: "a4" :: `cat a4`
+ASSERT :: "a5" :: `cat a5`
+
+LOCAL_CMD :: `echo "a6" > /tmp/{#sshIP#}_aabbcc/a6`
+SCP_LOCAL_TO_SSH_PULL_PUSH :: LOCAL_PATH :: "/tmp/{#sshIP#}_aabbcc" :: SSH_HOST_PATH :: "/tmp" :: LOCAL_INTF :: "eth1"  :: LOCAL_PASSWD :: "{#localPasswd#}"
+`cd /tmp/{#sshIP#}_aabbcc`
+ASSERT :: "a4" :: `cat a4`
+ASSERT :: "a5" :: `cat a5`
+ASSERT :: "a6" :: `cat a6`
+
+LOCAL_CMD :: `rm /tmp/{#sshIP#}_aabbcc -rf`
+`cd /tmp`
+`rm /tmp/{#sshIP#}_aabbcc -rf`
+
+
+
+##### scp ssh to local
+`cd /tmp`
+
+`echo "b1" > /tmp/{#sshIP#}_hijklmn`
+SCP_SSH_TO_LOCAL :: LOCAL_PATH :: "/tmp" :: SSH_HOST_PATH :: "{#sshIP#}_hijklmn" :: LOCAL_INTF :: "eth1" :: LOCAL_PASSWD :: "{#localPasswd#}"
+ASSERT :: "b1" :: LOCAL_CMD :: `cat /tmp/{#sshIP#}_hijklmn`
+
+`echo "b2" > /tmp/{#sshIP#}_hijklmn`
+SCP_SSH_TO_LOCAL_PUSH_PULL :: LOCAL_PATH :: "/tmp" :: SSH_HOST_PATH :: "{#sshIP#}_hijklmn" :: LOCAL_INTF :: "eth1" :: LOCAL_PASSWD :: "{#localPasswd#}"
+ASSERT :: "b2" :: LOCAL_CMD :: `cat /tmp/{#sshIP#}_hijklmn`

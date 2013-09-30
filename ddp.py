@@ -11,6 +11,7 @@ import ConfigParser
 import json
 import copy
 from datetime import datetime
+import time
 from multiprocessing import Process, Pipe, Value, Pool
 
 
@@ -123,6 +124,7 @@ class PrintProcess(Process):
 	def turnOff(self):
 		self.switchFlag.value = 0
 		self.sender.send( None )		#there must be one more put into sender, or print may be block forever
+		time.sleep( 1 )
 
 
 	def run(self):
@@ -191,6 +193,7 @@ class OPLogProcess(Process):
 	def turnOff(self):
 		self.switchFlag.value = 0
 		self.sender.send(None)		#there must be one more, or may be block forever
+		time.sleep( 1 )
 
 	def writeOutputFile(self, obj):
 		if hasattr(self, 'outputFile') and not None is self.outputFile:
@@ -751,6 +754,8 @@ class ResultProcess(Process):
 	def turnOff(self):
 		self.switchFlag.value = 0
 		self.sender.send( None )
+		#self.sender.send('PYSSH_CONNECTION_END_PYSSH')
+		time.sleep( 1 )
 
 	def closeSucc(self):
 		if None is self.sFile:
@@ -815,6 +820,7 @@ class ResultProcess(Process):
 		while 1 == self.switchFlag.value or self.receiver.poll():
 			tResultItem = self.receiver.recv()
 			if None is tResultItem:
+				print "ResultProcess run connection get None, switchFlag.value:%d" % self.switchFlag.value
 				continue
 			tHost = tResultItem['host']
 			# generate host string
@@ -879,6 +885,8 @@ class ResultProcess(Process):
 				self.printSender.send( "!!!ERROR!!!: unknown result item:%r", tResultItem)
 				hostResultDict[ tHost['hostName'] ] = {'code':4, 'exit':DDP_EXIT_USELESS_VALUE, 'msg':'unknown'}
 	
+		print "end ResultProcess while"
+		
 		# insert decorate lines
 		self.writeSucc('#-----------------------------------------------------------------------------------')
 		self.writeErr('#-----------------------------------------------------------------------------------')
@@ -886,12 +894,18 @@ class ResultProcess(Process):
 		tStrList = list()
 		tStrList.append("FININSHED ALL HOSTS, STATISTICS INFO")
 		if self.hostList is not None: tStrList.append("total host count: %d" % len(self.hostList))
-		tStrList.append("success and no meet with EXIT command host's counter: %d" % resultStatDict['success'][0])
-		tStrList.append("success, terminal because of EXIT command host's counter: %d" % resultStatDict['success'][1])
-		tStrList.append("error, login failed host's counter: %d" % resultStatDict['error'][-1])
-		tStrList.append("error, command failed host's counter: %d" % resultStatDict['error'][-2])
-		tStrList.append("error, EXIT command failed host's counter: %d" % resultStatDict['error'][-3])
-		tStrList.append("error, get sshHomePath failed host's counter: %d" % resultStatDict['error'][-4])
+		if 0 < resultStatDict['success'][0]:
+			tStrList.append("success and no meet with EXIT command host's counter: %d" % resultStatDict['success'][0])
+		if 0 < resultStatDict['success'][1]:
+			tStrList.append("success, terminal because of EXIT command host's counter: %d" % resultStatDict['success'][1])
+		if 0 < resultStatDict['error'][-1]:
+			tStrList.append("error, login failed host's counter: %d" % resultStatDict['error'][-1])
+		if 0 < resultStatDict['error'][-2]:
+			tStrList.append("error, command failed host's counter: %d" % resultStatDict['error'][-2])
+		if 0 < resultStatDict['error'][-3]:
+			tStrList.append("error, EXIT command failed host's counter: %d" % resultStatDict['error'][-3])
+		if 0 < resultStatDict['error'][-4]:
+			tStrList.append("error, get sshHomePath failed host's counter: %d" % resultStatDict['error'][-4])
 		if unknownCounter > 0:
 			tStrList.append("unknown result counter:%d" % unknownCounter)
 		
@@ -917,9 +931,13 @@ class ResultProcess(Process):
 			'hosts': hostResultDict,
 		}
 
+		print "before send result dict"
+
 		# return final result by result pipe
 		#self.retDict.value = json.dumps( tRetDict )
-		self.sender.send( tRetDict )
+		#self.sender.send( tRetDict )
+
+		print "end ResultProcess run"
 
 #################################################################################################################################################
 
@@ -1030,7 +1048,7 @@ def checkArgs(hostsFile=None, cmdsFile=None, output=None, onlyOutput=None, succe
 
 def argsDefine():
 	argsParser = argparse.ArgumentParser(prog="ddp", description = "ddp is a python ssh script")
-	argsParser.add_argument('-v', '--version', action='version', version='%(prog)s, author:vincentzhwg@gmail.com, version: 1.1.6')
+	argsParser.add_argument('-v', '--version', action='version', version='%(prog)s, author:vincentzhwg@gmail.com, version: 1.1.7')
 	argsParser.add_argument('-l', '--hostsFile', help="the path of hostsFile, this parameter can not used with hostsString at the same time")
 	argsParser.add_argument('-s', '--hostsString', help="hosts string, this parameter can not used with hostsFile at the same time")
 	argsParser.add_argument('-c', '--cmdsFile', help="the path of cmdsFile, this parameter can not used with execCmds at the same time")
@@ -1304,8 +1322,12 @@ def main(hostsFile=None, cmdsFile=None, hostsString=None, execCmds=None, output=
 	ddpRun(hostList, firstCmdNode, retryTimes=retryTimes, workersNO=workersNO, quietMode=quiet, outputFileQuietMode=outputFileQuietMode)
 	
 	# stop result worker
+	print "before resultWorker turnOff"
 	resultWorker.turnOff()
+	print "after resultWorker turnOff"
 	resultWorker.join()
+	print "after resultWorker join"
+
 
 	# stop print worker
 	if not quiet:
@@ -1324,19 +1346,19 @@ def main(hostsFile=None, cmdsFile=None, hostsString=None, execCmds=None, output=
 	logger.info('ddp execution time consumption:%fs, hosts:%d, start time:%s, end time:%s', (86400 * durationTime.days + durationTime.seconds + 0.000001 * durationTime.microseconds), len(hostList), startTime.strftime('%Y-%m-%d %H:%M:%S,%f'), endTime.strftime('%Y-%m-%d %H:%M:%S,%f'));
 
 
-	retDict = DDP_RESULT_PIPE_RECEIVER.recv()
-	totalCode = retDict['code']
-	if jsonFormat:
-		retDict = json.dumps( retDict )
-	if printResult:
-		print retDict
-	if DDP_USED_AS_SCRIPT:
-		if 0 == totalCode:
-			sys.exit( 0 )
-		else:
-			sys.exit( 1 )
-	else:
-		return retDict
+	#retDict = DDP_RESULT_PIPE_RECEIVER.recv()
+	#totalCode = retDict['code']
+	#if jsonFormat:
+	#	retDict = json.dumps( retDict )
+	#if printResult:
+	#	print retDict
+	#if DDP_USED_AS_SCRIPT:
+	#	if 0 == totalCode:
+	#		sys.exit( 0 )
+	#	else:
+	#		sys.exit( 1 )
+	#else:
+	#	return retDict
 
 	
 

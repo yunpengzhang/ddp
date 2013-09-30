@@ -5,7 +5,6 @@
 # author: vinczhang
 
 import sys, os
-import getpass
 import logging, logging.config
 import re
 import time
@@ -31,6 +30,8 @@ logger = logging.getLogger( "pyssh" )
 
 ###########################################
 FILTER_SPECIAL_CHARACTERS_LIST = [
+	#'warning: Authentication failed\.\\r\\r\\n',				### scp需要输入密码时，将其中断会出提示的第一句
+	#'Disconnected; authentication cancelled by user \(Authentication cancelled by user\.\)\.\\r\\r\\n',	### scp需要输入密码时，将其中断会出提示的第二句
 	'warning:(.*?)Connection Timed Out\\r\\r\\n',						# filter scp timeout output after sigint signal
 	'nohup: ignoring input and appending output to(.*?)\\r\\n',		# filter nohup 
 	'\\x1b\\[Ke',
@@ -173,8 +174,10 @@ class PySSH:
 		self.needPassword = None
 
 		#标识scp操作方向的标志，None表示未知，需要探测；True表示方向可通；False表示方向不可通
-		self.scpPullFromLocalFlag = None	#ssh机器从操作机拉取的方向
-		self.scpPushFromLocalFlag = None	#从操作机向ssh机器进行推送的方向
+		self.flagScpLocalToSelfWithPull = None	#scp,从操作机传输到SSH机，pull拉取方向是否可行
+		self.flagScpLocalToSelfWithPush = None	#scp,从操作机传输到SSH机，push推送方向是否可行
+		self.flagScpSelfToLocalWithPush = None	#scp,从SSH机传输到操作机，push推送方向是否可行
+		self.flagScpSelfToLocalWithPull = None  #scp,从SSH机传输到操作机，pull拉取方向是否可行
 
 	def close(self):
 		try:
@@ -185,7 +188,8 @@ class PySSH:
 			    #self.expect(EOF)
 			self.sshClient.close(force=True)
 		except:
-			logger.exception("hostName:%s, occurs exception when closing", self.hostName)
+			pass
+			#logger.exception("hostName:%s, occurs exception when closing", self.hostName)
 
 
 	### 把输出中特殊的字符或多余的输出过滤掉
@@ -204,609 +208,6 @@ class PySSH:
 		return tempStr
 
 
-	def getCommandOutput(self, originOutput):
-		# originOutput often is self.sshClient.before
-
-		##logger.debug('originOutput:%r', originOutput)
-		## filter scp timeout output after sigint signal
-		#tStr = re.sub(r'warning:.*Connection Timed Out\r\r\n', '', originOutput)
-		##logger.debug('after filter scp warning, output:%r', tStr)
-		#tStr = re.sub(r'nohup: ignoring input and appending output to(.*?)\r\n', '', tStr)
-		##logger.debug('after filter nohup output, output:%r', tStr)
-
-		#filter special string for output
-		tStr = self.filterSpecialStringForOutput(originOutput)
-
-		commandOutput = self.exceptFirstLine( tStr )
-		return commandOutput
-
-
-	def execLocalCommand(self, command, commandExt=None, timeout=-1):
-		logger.info("hostName:%s, exec local command, parameter:command:%s, timeout:%r", self.hostName, command, timeout)
-		#deal parameter
-		if None is commandExt: commandExt = dict()
-		
-		tEvents = dict()
-		if 'SCP_PWD' in commandExt:
-			tEvents[ '(?i)password' ] = "%s" % commandExt['SCP_PWD']
-
-		# add \n to every item in events
-		for (k, v) in tEvents.items():
-			tEvents[ k ] = "%s\n" % v
-
-		try:
-			logger.debug('events:%r', tEvents)
-			tCommand = '/bin/sh -c "%s"' % command
-			(commandOutput, exitCode) = pexpect.run(command=tCommand, events=tEvents, timeout=timeout, withexitstatus=True)
-			logger.debug('hostName:%s, local command:%s, output:%r, exit:%d', self.hostName, command, commandOutput, exitCode)
-			if 0 != exitCode:
-				return {'code':-8001, 'output':commandOutput}
-			else:
-				return {'code':exitCode, 'output':commandOutput}
-		except:
-			logger.exception("hostName:%s, exec local command exception", self.hostName)
-			return {'code': -8002, 'output':'exception occurs'}
-
-
-
-
-	def execCommand(self, command, commandExt = None, timeout = -1):
-		"""
-		if the value of timeout is -1, then expect will use self.timeout
-		code:
-		0 : success
-		"""
-		logger.info("hostName:%s, parameter:command:%s, timeout:%r", self.hostName, command, timeout)
-
-		# deal parameters
-		if None is commandExt: commandExt = dict()
-			
-		if 0 == cmp('pyssh_scp_local_pull_push', command) or 0 == cmp('pyssh_scp_local_push_pull', command):
-			tLocalIntf = LOCAL_INTERFACE
-			if 'LOCAL_INTF' in commandExt:
-				tLocalIntf = commandExt['LOCAL_INTF']
-			tLocalPwd = None
-			if 'LOCAL_PWD' in commandExt:
-				tLocalPwd = commandExt['LOCAL_PWD']
-			tLocalPort = None
-			if 'LOCAL_PORT' in commandExt:
-				tLocalPort = commandExt['LOCAL_PORT']
-			tLocalIsDir = False
-			if 'LOCAL_ISDIR' in commandExt:
-				tLocalIsDir = commandExt['LOCAL_ISDIR']
-			if 0 == cmp('pyssh_scp_local_pull_push', command):
-				return self.scpFromLocalPullPush(localPassword=tLocalPwd, localPath=commandExt['LOCAL_PATH'], sshHostPath=commandExt['SSH_HOST_PATH'], localIsdir=tLocalIsDir, localIntf=tLocalIntf, localPort=tLocalPort, timeout=timeout)
-			elif 0 == cmp('pyssh_scp_local_push_pull', command):
-				return self.scpFromLocalPushPull(localPassword=tLocalPwd, localPath=commandExt['LOCAL_PATH'], sshHostPath=commandExt['SSH_HOST_PATH'], localIsdir=tLocalIsDir, localIntf=tLocalIntf, localPort=tLocalPort, timeout=timeout)
-		elif 0 == cmp('pyssh_add_user', command):
-			tUserPassword = None
-			if 'USER_PWD' in commandExt:
-				tUserPassword = commandExt['USER_PWD']
-			tUserHomePath = None
-			if 'USER_HOME' in commandExt:
-				tUserHomePath = commandExt['USER_HOME']
-			tGroupName = None
-			if 'GROUP_NAME' in commandExt:
-				tGroupName = commandExt['GROUP_NAME']
-			return self.addUser(userName=commandExt['USER_NAME'], userPassword=tUserPassword, userHomePath=tUserHomePath, groupName=tGroupName)
-		elif command.startswith('scp'):
-			scpCommand = command
-			if 'SCP_PWD' in commandExt:
-				scpPassword = commandExt['SCP_PWD']
-			else:
-				scpPassword = None
-			return self.execScpCommand(scpCommand, scpPassword, timeout=timeout)
-		else:
-			self.sshClient.sendline(command)
-			#time.sleep(SLEEP_TIME_AFTER_SENDLINE)
-			i = self.sshClient.expect([self.prompt, pexpect.EOF, pexpect.TIMEOUT], timeout)
-			logger.info("hostName:%(hostName)s, command:%(command)s, commandExt:%(commandExt)r, expect['%(prompt)s', pexpect.EOF, pexpect.TIMEOUT], timeout=%(timeout)r, index=%(index)d, before:%(before)r, after:%(after)r, buffer:%(buffer)r" % {'hostName':self.hostName, 'command':command, 'commandExt':commandExt, 'prompt':self.prompt, 'timeout':timeout, 'index':i, 'before':self.sshClient.before, 'after':self.sshClient.after, 'buffer':self.sshClient.buffer})
-			if i == 0:
-				commandOutput = self.getCommandOutput( self.sshClient.before )
-
-				#if command.startswith('nohup') and self.sshClient.buffer:
-				#	logger.info('hostName:%s, command starts with nohup, buffer:%r', self.hostName, self.sshClient.buffer)
-				#	commandOutput = "%s%s" % (commandOutput, self.sshClient.buffer)
-				#	#self.sshClient.buffer = ''
-				#	self.clearOutputBuffer()
-
-				exitRet = self.getPreCommandExitValue()
-				if 0 != exitRet['code']:
-					logger.error('hostName:%s, get command exec result failed, command:%s, get exit value result:%r', self.hostName, command, exitRet)
-					return {'code':exitRet['code'], 'output':'error occurs when getting exit value for command:%s, reason:%r' % (command, exitRet['output'])}
-				else:
-					if 0 == exitRet['output']:
-						logger.info('hostName:%s, exec command success, command:%s, output:%r', self.hostName, command, commandOutput)
-						return {'code':0, 'output':commandOutput}
-					else:
-						logger.error('hostName:%s, exec command finished, but exit value is not 0, command:%s, output:%r', self.hostName, command, commandOutput)
-						return {'code':-6009, 'output':commandOutput}
-			elif i == 1:
-				logger.error("hostName:%s, execute command, EOF occur, then send control signal C", self.hostName)
-				#self.sshClient.sendcontrol('c')
-				#self.sshClient.sendintr()
-				self.clearOutputBuffer()
-				return {'code':-6007, 'output':'EOF occurs when executing command:%s' % command}
-			else:
-				logger.error("hostName:%s, execute command, timeout occur, then send control signal C", self.hostName)
-				#self.sshClient.sendcontrol('c')
-				self.sshClient.sendintr()
-				self.clearOutputBuffer()
-				return {'code':-6008, 'output':'timeout occurs when executing command:%s' % command}
-
-
-	def login(self):
-		"""
-		Return : int
-		0: login success, and get the correct prompt which is stored in the attribute of prompt
-		-4001: password is not correct
-		-4002: ssh connection success, but can not get the prompt
-		-4003: EOF
-		-4004: timeout
-		"""
-
-		sshLoginCommand = ""
-		if self.port:
-			sshLoginCommand = 'ssh -l %s -p %d %s' % (self.user, self.port, self.hostName)
-		else:
-			sshLoginCommand = 'ssh -l %s %s' % (self.user, self.hostName)
-		logger.info("hostName:%s, begin ssh login, ssh login command:%s", self.hostName, sshLoginCommand)
-
-		self.sshClient = pexpect.spawn(sshLoginCommand, timeout = self.timeout, maxread=81920)
-		#self.sshClient.logfile = open(os.path.join(os.path.dirname(os.path.realpath(__file__)), 'logs/pexpect.log'), 'w')
-
-		i = self.sshClient.expect(['(?i)yes/no', '(?i)password', '(?i)last login', '(?i)welcome', '(?i)interrupted system call', pexpect.EOF, pexpect.TIMEOUT], timeout=LOGIN_WAIT_TIMEOUT)
-		logger.info("hostName:%(hostName)s, command:%(command)s, expect['(?i)yes/no', '(?i)password', '(?i)last login', '(?i)welcome', '(?i)interrupted system call', pexpect.EOF, pexpect.TIMEOUT], timeout=%(timeout)d, index=%(index)d, before:%(before)r, after:%(after)r, buffer:%(buffer)r" % {'hostName':self.hostName, 'command':sshLoginCommand, 'timeout':LOGIN_WAIT_TIMEOUT, 'index':i, 'before':self.sshClient.before, 'after':self.sshClient.after, 'buffer':self.sshClient.buffer})
-		if i == 0:
-			logger.info('hostName:%s, ssh logining, send yes', self.hostName)
-			self.sshClient.sendline('yes')
-			#time.sleep(SLEEP_TIME_AFTER_SENDLINE)
-			i = self.sshClient.expect(['(?i)yes/no', '(?i)password', '(?i)last login', '(?i)welcome', '(?i)interrupted system call', pexpect.EOF, pexpect.TIMEOUT], timeout=LOGIN_WAIT_TIMEOUT)
-			logger.info("hostName:%(hostName)s, command:%(command)s, expect['(?i)yes/no', '(?i)password', '(?i)last login', '(?i)welcome', '(?i)interrupted system call', pexpect.EOF, pexpect.TIMEOUT], timeout=%(timeout)d, index=%(index)d, before:%(before)r, after:%(after)r, buffer:%(buffer)r" % {'hostName':self.hostName, 'command':sshLoginCommand, 'timeout':LOGIN_WAIT_TIMEOUT, 'index':i, 'before':self.sshClient.before, 'after':self.sshClient.after, 'buffer':self.sshClient.buffer})
-		if i == 1:
-			logger.info('hostName:%s, ssh loging, send password', self.hostName)
-
-			self.needPassword = True
-
-			self.sshClient.sendline(self.password)
-			#time.sleep(SLEEP_TIME_AFTER_SENDLINE)
-			p = self.sshClient.expect(['(?i)password', '(?i)denied', '(?i)last login', '(?i)welcome', pexpect.EOF, pexpect.TIMEOUT], timeout=LOGIN_WAIT_TIMEOUT)
-			logger.info("hostName:%(hostName)s, command:%(command)s, expect['(?i)password', '(?i)denied', '(?i)last login', pexpect.EOF, pexpect.TIMEOUT], timeout=%(timeout)d, index=%(index)d, before:%(before)r, after:%(after)r, buffer:%(buffer)r" % {'hostName':self.hostName, 'command':sshLoginCommand, 'timeout':LOGIN_WAIT_TIMEOUT, 'index':p, 'before':self.sshClient.before, 'after':self.sshClient.after, 'buffer':self.sshClient.buffer})
-			if p == 0 or p == 1:
-				logger.error("hostName:%s, ssh password wrong", self.hostName)
-				return {'code':-4001, 'output':'password is not correct'}
-			elif p == 2 or p == 3:
-				logger.info("hostName:%s, ssh login success, begin get prompt", self.hostName)
-				self.prompt = self.getPrompt()
-				if self.prompt:
-					logger.info("hostName:%s, get prompt success:%r" % (self.hostName, self.prompt))
-					return {'code':0, 'output':'login success'}
-				else:
-					logger.error("hostName:%s, can not get prompt" % self.hostName)
-					return {'code':-4002, 'output':'login success, but can not get the prompt'}
-			elif p == 4:
-				logger.error("hostName:%s, ssh login failed, EOF occurs", self.hostName)
-				return {'code':-4003, 'output':'login EOF occurs'}
-			else:
-				logger.error("hostName:%s, ssh login failed, timeout occurs", self.hostName)
-				return {'code':-4004, 'output':'login timeout occurs'}
-		elif i == 2 or i == 3:
-			logger.info("hostName:%s, ssh login success, and don't need password" % self.hostName)
-
-			self.needPassword = False
-
-			self.prompt = self.getPrompt()
-			if self.prompt:
-				logger.info("hostName:%s, get prompt success:%r" % (self.hostName, self.prompt))
-				return {'code':0, 'output':'login success'}
-			else:
-				logger.error("hostName:%s, can not get prompt" % self.hostName)
-				return {'code':-4002, 'output':'can not get the prompt'}
-		elif i == 4:
-			logger.warning("hostName:%s, interrupted system call occurs, recall login method", self.hostName)
-			return self.login()
-		elif i == 5:
-			logger.error("hostName:%s, ssh login failed, EOF occurs", self.hostName)
-			return {'code':-4003, 'output':'login EOF occurs'}
-		else:
-			logger.error("hostName:%s, ssh login failed, timeout occurs", self.hostName)
-			return {'code':-4004, 'output':'login timeout occurs'}
-					
-
-	def testPathExists(self, path):
-		logger.info("hostName:%s, test path exists start, path:%s", self.hostName, path)
-		tRet = self.execCommand('ls -l --color=never %s' % path)
-		if 0 != tRet['code']:
-			logger.warning("hostName:%s, test path[%s] failed, reason:%r", self.hostName, path, tRet['output'])
-			return False
-		else:
-			logger.info("hostName:%s, test path[%s] success, output:%r", self.hostName, path, tRet['output'])
-			return True
-
-
-
-	def scpPushFromLocal(self, scpCommand, validation=None, validationCommand='', timeout=-1):
-		if -1 == timeout:
-			timeout = SCP_WAIT_TIMEOUT
-
-		logger.info('hostName:%s, scpPushFromLocal starts, scpCommand:%s, validation:%r, validationCommand:%s, timeout:%r' % (self.hostName, scpCommand, validation, validationCommand, timeout))
-	
-		child = pexpect.spawn( scpCommand )
-	
-		#time.sleep(SLEEP_TIME_AFTER_SENDLINE)
-		i = child.expect(['(?i)yes/no', '(?i)password', '(?i)interrupted system call', pexpect.EOF, pexpect.TIMEOUT], timeout=timeout)
-		logger.info("hostName:%s, scp push from local command:%s, expect ['(?i)yes/no', '(?i)password', '(?i)interrupted system call', pexpect.EOF, pexpect.TIMEOUT], timeout=%r, index=%d, before:%r, after:%r, buffer:%r" % (self.hostName, scpCommand, timeout, i, child.before, child.after, child.buffer))
-		if i == 0:
-			logger.info("hostName:%s, scp push from local, send yes", self.hostName)
-			# clear output before send
-			PySSHUtil.pexpectClearOutputBuffer(child)
-			child.sendline('yes')
-			#time.sleep(SLEEP_TIME_AFTER_SENDLINE)
-			i = child.expect(['(?i)yes/no', '(?i)password', '(?i)interrupted system call', pexpect.EOF, pexpect.TIMEOUT], timeout=timeout)
-			logger.info("hostName:%s, command:%s, expect ['(?i)yes/no', '(?i)password', '(?i)interrupted system call', pexpect.EOF, pexpect.TIMEOUT], timeout=%r, index=%d, before:%r, after:%r, buffer:%r" % (self.hostName, 'yes', timeout, i, child.before, child.after, child.buffer))
-		if i == 1:
-			logger.info("hostName:%s, scp push from local, need password", self.hostName)
-			if None is self.password:
-				logger.error("hostName:%s, scp push from local, need password, but not offer", self.hostName)
-				return {'code':-5011, 'output':'scp push from local need password, but not offer'}
-			# clear output before send
-			PySSHUtil.pexpectClearOutputBuffer(child)
-			child.sendline( self.password )
-			#time.sleep(SLEEP_TIME_AFTER_SENDLINE)
-			q = child.expect(['(?i)password', '(?i)denied', pexpect.EOF, pexpect.TIMEOUT], timeout=timeout)
-			logger.info("hostName:%s, expect ['(?i)password', '(?i)denied', pexpect.EOF, pexpect.TIMEOUT], timeout=%r, index=%d, before:%r, after:%r, buffer:%r" % (self.hostName, timeout, q, child.before, child.after, child.buffer))
-			if q == 0 or q == 1:
-				logger.warn("hostName:%s, scp push from local failed, password not correct or permission denied, then send control signal C" % self.hostName)
-				child.sendcontrol('c')
-				PySSHUtil.pexpectClearOutputBuffer(child)
-				return {'code':-5012, 'output':'scp push from local faild, because password is not correct or permission denied'}
-			elif q == 2:
-				if validation is None or validation is False:
-					return {'code':0, 'output':'scp push from local success, but no validation'}
-				else:
-					logger.info("hostName:%s, scp push from local pass first step, wait to validation" % self.hostName)
-					tRet = self.execCommand(validationCommand)
-					logger.info("hostName:%s, scp push from local validation ret:%r", self.hostName, tRet)
-					if 0 == tRet['code']:
-						return {'code':0, 'output':'scp push from local success and pass validation'}
-					else:
-						return {'code':-5013, 'output':'scp push from local failed, can not pass validation comman:%s, reason:%r' % (validationCommand, tRet['output'])}
-			else:
-				logger.warn("hostName:%s, scp push from local failed, timeout[%r] occurs, then send control signal C", self.hostName, timeout)
-				child.sendcontrol('c')
-				PySSHUtil.pexpectClearOutputBuffer(child)
-				return {'code':-5014, 'output':'scp push from local failed, timeout occurs'}
-		elif i == 2:
-			logger.warn("hostName:%s, scp push from local failed, send control signal C, then recall scpPushFromLocal" % self.hostName)
-			child.sendcontrol('c')
-			PySSHUtil.pexpectClearOutputBuffer(child)
-			return self.scpPushFromLocal(scpCommand=scpCommand, validation=validation, validationCommand=validationCommand, timeout=timeout)
-		elif i == 3:
-			childOutput = child.before
-			child.close()	# close child, then can get exit code from child.exitstatus
-			logger.info("hostName:%s, scp push from local executed completely, exit status:%d", self.hostName, child.exitstatus)
-			childReturnCode = child.exitstatus
-			if 0 == childReturnCode:
-				if validation is None or validation is False:
-					return {'code':0, 'output':'scp push from local success, but no validation'}
-				else:
-					logger.info("hostName:%s, scp push from local pass first step, wait to validation" % self.hostName)
-					tRet = self.execCommand(validationCommand)
-					logger.info("hostName:%s, scp push from local validation ret:%r", self.hostName, tRet)
-					if 0 == tRet['code']:
-						return {'code':0, 'output':'scp push from local success and pass validation'}
-					else:
-						return {'code':-5015, 'output':'scp push from local failed, can not pass validation, reason:%r' % tRet['output']}
-			else:
-				return {'code':-5022, 'output':'scp push from local failed, reason:%r' % childOutput}
-		elif i == 4:
-			logger.warn("hostName:%s, scp push from local failed, timeout[%r] occurs, then send control signal C", self.hostName, timeout)
-			child.sendcontrol('c')
-			PySSHUtil.pexpectClearOutputBuffer(child)
-			return {'code':-5016, 'output':'scp push from local failed, timeout occurs'}
-
-
-	def scpPushFromLocalTest(self, sourceTempDir='/tmp/', destTempDir='/tmp/'):
-		logger.info('hostName:%s, scpPushFromLocalTest starts, sourceTempDir:%s, destTempDir:%s', self.hostName, sourceTempDir, destTempDir)
-	
-		### create source temp file in local host ###
-		tryCounter = 0
-		while True:
-			if 10 < tryCounter:
-				logger.error('hostName:%s, test failed, can not create source temp file in local host', self.hostName)
-				# set flag
-				self.scpPushFromLocalFlag = False	
-				return False
-			sourceTempFileName = ''.join( random.sample('abcdefghijklmnopqrstuvwxyz1234567890', 25) )
-			sourceTempFilePath = os.path.join(sourceTempDir, sourceTempFileName)
-			if os.path.exists( sourceTempFilePath ) or self.testPathExists( os.path.join(destTempDir, sourceTempFileName) ):
-				tryCounter += 1
-			else:
-				break
-		sourceTempFile = open(sourceTempFilePath, 'w')
-		sourceTempFile.write('pyssh scp push from local test')
-		sourceTempFile.flush()
-		sourceTempFile.close()
-		logger.info('hostName:%s, create temp file success:%s', self.hostName, sourceTempFilePath)
-	
-		if not self.port is None:
-			remotePort = '-P %d' % self.port
-		else:
-			remotePort = ''
-		
-		scpPushFromLocalTestCommand = 'scp %(port)s %(source)s %(user)s@%(hostName)s:%(dest)s' % {'port':remotePort, 'source':sourceTempFilePath, 'user':self.user, 'hostName':self.hostName, 'dest':destTempDir}
-		scpPushFromLocalTestValidationCommand = 'ls -l --color=never %s' % os.path.join(destTempDir, sourceTempFileName)
-
-		scpRet = self.scpPushFromLocal(scpCommand=scpPushFromLocalTestCommand, validation=True, validationCommand=scpPushFromLocalTestValidationCommand)
-		logger.info('hostName:%s, scp test ret:%r', self.hostName, scpRet)
-
-		### delete temp file in local
-		os.remove( sourceTempFilePath )
-
-		if 0 != scpRet['code']:
-			logger.error('hostName:%s, scp push from locat test failed, reason:%s', self.hostName, scpRet['output'])
-			# set flag
-			self.scpPushFromLocalFlag = False	
-			return False
-		else:
-			logger.info("hostName:%s, scp push from local test success, then delete self temp file, return True", self.hostName)
-			### delete self temp file
-			deleteTempFileCommand = 'rm -f %s' % os.path.join(destTempDir, sourceTempFileName)
-			deleteRet = self.execCommand(deleteTempFileCommand)
-			logger.info("hostName:%s, deleteTempFileCommand result:%r", self.hostName, deleteRet)
-			# set flag
-			self.scpPushFromLocalFlag = True
-			return True
-
-
-
-
-
-	def scpPushToDestTest(self, destUser, destHostName, destPassword=None, destPort=None, destTempDir='/tmp/', sourceTempDir='/tmp/'):
-		logger.info("hostName:%s, scpPushToDestTest starts, destUser:%s, destHostName:%s, destPort:%r, destTempDir:%s, sourceTempDir:%s", self.hostName, destUser, destHostName, destPort, destTempDir, sourceTempDir)
-		### create source temp file in source temp dir ###
-		tryCounter = 0
-		while True:
-			if 10 < tryCounter:
-				logger.error('hostName:%s, test failed, can not create source temp file', self.hostName)
-				return False
-			sourceTempFileName = ''.join( random.sample('abcdefghijklmnopqrstuvwxyz1234567890', 25) )
-			sourceTempFilePath = os.path.join(sourceTempDir, sourceTempFileName)
-			if self.testPathExists( sourceTempFilePath ):
-				tryCounter += 1
-			else:
-				break
-		createTempFileCommand = "echo 'pyssh scp push to dest test' > %s" % sourceTempFilePath
-		deleteTempFileCommand = "rm -f %s" % sourceTempFilePath
-		createRet = self.execCommand(createTempFileCommand)
-		if 0 != createRet['code']:
-			logger.error('hostName:%s, failed, execute create temp command failed, command:%s, reason:%s' % (self.hostName, createTempFileCommand, createRet['output']))
-			return False
-		logger.info('hostName:%s, create temp file success:%s', self.hostName, sourceTempFilePath)
-		### scp port ###
-		if destPort is None:
-			tdPort = ''
-		else:
-			tdPort = '-P %d' % destPort
-		scpPushToDestTestCommand = 'scp %(port)s %(source)s %(user)s@%(hostName)s:%(dest)s' % {'port':tdPort, 'source':sourceTempFilePath, 'user':destUser, 'hostName':destHostName, 'dest':destTempDir}
-		logger.info('hostName:%s, scp push to dest test, command:%s, start test', self.hostName, scpPushToDestTestCommand)
-		scpRet = self.execScpCommand(scpPushToDestTestCommand, destPassword, timeout=SCP_TEST_TIMEOUT)
-		### delete temp file ###
-		delTempFileRet = self.execCommand(deleteTempFileCommand)
-		logger.info("hostName:%s, after execute scp command, delete temp file, delete result:%r", self.hostName, delTempFileRet)
-		if 0 != scpRet['code']:
-			logger.error('hostName:%s, scp push to dest test, command execute failed, execute result:%r', self.hostName, scpRet)
-			return False
-		else:
-			return True
-
-
-
-	def scpPullFromLocalTest(self, sourceUser, sourcePassword=None, sourceIfName=None, sourcePort=None, sourceTempDir='/tmp', destTempDir='/tmp', validation=True):
-		# deal parameters
-		if None is sourceIfName: sourceIfName = LOCAL_INTERFACE
-
-		logger.info("hostName:%s, scpPullFromLocalTest starts, sourceIfName:%s, sourceUser:%s, sourcePort:%r, sourceTempDir:%s, destTempDir:%s, validation:%r", self.hostName, sourceIfName, sourceUser, sourcePort, sourceTempDir, destTempDir, validation)
-		### get local host IP
-		sourceHostName = util.getIP( sourceIfName )
-		if sourceHostName is None:
-			logger.error('hostName:%s, failed, can not get local IP', self.hostName)
-			return False
-		logger.info('hostName:%s, scp pull from local test, local IP:%s', self.hostName, sourceHostName)
-		### create source temp file in local host ###
-		tryCounter = 0
-		while True:
-			if 10 < tryCounter:
-				logger.error('hostName:%s, test failed, can not create source temp file in local host', self.hostName)
-				return False
-			sourceTempFileName = ''.join( random.sample('abcdefghijklmnopqrstuvwxyz1234567890', 25) )
-			sourceTempFilePath = os.path.join(sourceTempDir, sourceTempFileName)
-			if os.path.exists( sourceTempFilePath ):
-				tryCounter += 1
-			else:
-				break
-		sourceTempFile = open(sourceTempFilePath, 'w')
-		sourceTempFile.write('pyssh scp pull local test')
-		sourceTempFile.flush()
-		sourceTempFile.close()
-		logger.info('hostName:%s, create temp file success:%s', self.hostName, sourceTempFilePath)
-
-		tResult = self.scpPullToSelfTest(sourceHostName=sourceHostName, sourceUser=sourceUser, sourcePassword=sourcePassword, sourceFile=sourceTempFilePath, sourcePort=sourcePort, destTempDir=destTempDir, validation=validation)
-		
-		### delete local temp file
-		try:
-			os.remove( sourceTempFilePath )
-		except:
-			pass
-
-		# set flag
-		if tResult:
-			self.scpPullFromLocalFlag = True
-		else:
-			self.scpPullFromLocalFlag = False
-		
-		return tResult
-
-
-
-	def scpPullToSelfTest(self, sourceHostName, sourceUser, sourceFile, sourcePassword=None, sourcePort=None, destTempDir='/tmp/', validation=True):
-		logger.info("hostName:%s, scpPullToSelfTest starts, sourceUser:%s, sourcePort:%r, sourceFile:%s, destTempDir:%s, validation:%r", self.hostName, sourceUser, sourcePort, sourceFile, destTempDir, validation)
-		### scp port ###
-		if sourcePort is None:
-			tdPort = ''
-		else:
-			tdPort = '-P %d' % sourcePort
-		scpPullToSelfTestCommand = 'scp %(port)s %(user)s@%(hostName)s:%(source)s %(dest)s' % {'port':tdPort, 'source':sourceFile, 'user':sourceUser, 'hostName':sourceHostName, 'dest':destTempDir}
-		logger.info('hostName:%s, scp pull to self test, command:%s, start test', self.hostName, scpPullToSelfTestCommand)
-		scpRet = self.execScpCommand(scpPullToSelfTestCommand, sourcePassword, timeout=SCP_TEST_TIMEOUT)
-		logger.info("hostName:%s, after execute scp command, delete temp file", self.hostName)
-		if 0 != scpRet['code']:
-			logger.error('hostName:%s, scp pull to self test, command execute failed, execute result:%r', self.hostName, scpRet)
-			return False
-		else:
-			### whether validation
-			if validation:
-				validationCommand = 'ls -l --color=never %s' % os.path.join(destTempDir, os.path.basename(sourceFile))
-				logger.info('hostName:%s, scp pull to self test, validationCommand:%s', self.hostName, validationCommand)
-				validRet = self.execCommand(validationCommand)
-				if 0 != validRet['code']:
-					logger.error('hostName:%s, scp pull to self test, file transmission success, but can not pass validation, validation result:%r', self.hostName, validRet)
-					return False
-			### delete test temp file
-			deleteTempFileCommand = 'rm -rf %s' % os.path.join(destTempDir, os.path.basename(sourceFile))
-			logger.info('hostName:%s, scp pull to self test, deleteTempFileCommand:%s', self.hostName, deleteTempFileCommand)
-			deleteRet = self.execCommand(deleteTempFileCommand)
-			logger.info('hostName:%s, scp pull to self test, deleteTempFileCommand result:%r', self.hostName, deleteRet)
-
-			return True
-
-	
-	def getPreCommandExitValue(self):
-		logger.debug('hostName:%s, getPreCommandExitValue starts', self.hostName)
-		# clear output before get
-		#self.clearOutputBuffer()
-		self.sshClient.sendline('echo $?')
-		#time.sleep(SLEEP_TIME_AFTER_SENDLINE)
-		qqT = self.sshClient.expect([self.prompt, pexpect.EOF, pexpect.TIMEOUT], timeout = 10)
-		logger.debug("hostName:%(hostName)s, command:%(command)s, expect['%(prompt)s', pexpect.EOF, pexpect.TIMEOUT], timeout=%(timeout)r, index=%(index)d, before:%(before)r, after:%(after)r, buffer:%(buffer)r" % {'hostName':self.hostName, 'command':'echo $?', 'prompt':self.prompt, 'timeout':5, 'index':qqT, 'before':self.sshClient.before, 'after':self.sshClient.after, 'buffer':self.sshClient.buffer})
-		if 0 == qqT:
-			#tBf = self.sshClient.before
-			#tBf = re.sub(r'warning:.*Connection Timed Out\r\r\n', '', tBf)
-			#tBf = re.sub(r'nohup: ignoring input and appending output to(.*?)\r\n', '', tBf)
-
-			#filter special string for output
-			tBf = self.filterSpecialStringForOutput(self.sshClient.before)
-
-			tOp = self.exceptFirstLine(tBf).strip()
-			try:
-				tOpInt = int(tOp)
-				return {'code':0, 'output':tOpInt}
-			except Exception, e:
-				logger.exception("hostName:%s, transfer to int occursexception" % self.hostName)
-				#self.sshClient.sendintr()
-				self.clearOutputBuffer()
-				return {'code':-6006, 'output':'exception occurs when getting pre command exit value, reason:%r' % tOp}
-		elif 1 == qqT:
-			logger.error("hostName:%s, getPreCommandExitValue EOF occurs", self.hostName)
-			#self.sshClient.sendintr()
-			self.clearOutputBuffer()
-			return {'code':-6004, 'output':'EOF occurs when getting pre command exit value'}
-		else:
-			logger.error("hostName:%s, getPreCommandExitValue timeout occurs", self.hostName)
-			self.sshClient.sendintr()
-			self.clearOutputBuffer()
-			return {'code':-6005, 'output':'TIMEOUT occurs when getting pre command exit value'}
-
-
-	def execScpCommand(self, scpCommand, scpPassword = None, timeout = -1):
-		if -1 == timeout:
-			timeout = SCP_WAIT_TIMEOUT
-
-		logger.info("hostName:%s, exec scp command starts, parameter:scpCommand:%s, timeout:%r" % (self.hostName, scpCommand, timeout))
-
-		# clear output before exec command
-		#self.clearOutputBuffer()
-
-		self.sshClient.sendline(scpCommand)
-		#time.sleep(SLEEP_TIME_AFTER_SENDLINE)
-		i = self.sshClient.expect(['(?i)yes/no', '(?i)password', '(?i)authentication failed', '(?i)interrupted system call', self.prompt, pexpect.EOF, pexpect.TIMEOUT], timeout=timeout)
-		logger.info("hostName:%(hostName)s, command:%(command)s, expect['(?i)yes/no', '(?i)password', '(?i)authentication failed', '(?i)interrupted system call', '%(prompt)s', pexpect.EOF, pexpect.TIMEOUT], timeout=%(timeout)r, index=%(index)d, before:%(before)r, after:%(after)r, buffer:%(buffer)r" % {'hostName':self.hostName, 'command':scpCommand, 'prompt':self.prompt, 'timeout':timeout, 'index':i, 'before':self.sshClient.before, 'after':self.sshClient.after, 'buffer':self.sshClient.buffer})
-		if i == 0:
-			logger.info("hostName:%s, exec scp, send yes", self.hostName)
-			# clear output before exec command
-			self.clearOutputBuffer()
-			self.sshClient.sendline('yes')
-			#time.sleep(SLEEP_TIME_AFTER_SENDLINE)
-			i = self.sshClient.expect(['(?i)yes/no', '(?i)password', '(?i)authentication failed', '(?i)interrupted system call',self.prompt, pexpect.EOF, pexpect.TIMEOUT], timeout=timeout)
-			logger.info("hostName:%(hostName)s, command:%(command)s, expect['(?i)yes/no', '(?i)password', '(?i)authentication failed', '(?i)interrupted system call', '%(prompt)s', pexpect.EOF, pexpect.TIMEOUT], timeout=%(timeout)r, index=%(index)d, before:%(before)r, after:%(after)r, buffer:%(buffer)r" % {'hostName':self.hostName, 'command':scpCommand, 'prompt':self.prompt, 'timeout':timeout, 'index':i, 'before':self.sshClient.before, 'after':self.sshClient.after, 'buffer':self.sshClient.buffer})
-		if i == 1:
-			logger.info("hostName:%s, exec scp, need password", self.hostName)
-			if None is scpPassword:
-				logger.error("hostName:%s, need password, but does not offer password", self.hostName)
-				return {'code':-5005, 'output':'scp command need password, but not offer'}
-			# clear output before exec command
-			self.clearOutputBuffer()
-			self.sshClient.sendline(scpPassword)
-			#time.sleep(SLEEP_TIME_AFTER_SENDLINE)
-			q = self.sshClient.expect(['(?i)password', '(?i)denied', self.prompt, pexpect.EOF, pexpect.TIMEOUT], timeout=timeout)
-			logger.info("hostName:%(hostName)s, send password, expect['(?i)password', '(?i)denied', '%(prompt)s', pexpect.EOF, pexpect.TIMEOUT], timeout=%(timeout)r, index=%(index)d, before:%(before)r, after:%(after)r, buffer:%(buffer)r" % {'hostName':self.hostName, 'prompt':self.prompt, 'timeout':timeout, 'index':q, 'before':self.sshClient.before, 'after':self.sshClient.after, 'buffer':self.sshClient.buffer})
-			if q == 0 or q == 1:
-				logger.error("hostName:%s, scp command:%s, password not correct, then send control signal C", self.hostName, scpCommand)
-				#self.sshClient.sendcontrol('c')
-				self.sshClient.sendintr()
-				self.clearOutputBuffer()
-				return {'code':-5006, 'output':'scp command faild, because password is not correct or permission denied'}
-			elif q == 2:
-				logger.info("hostName:%s, scp exec finished, then validation", self.hostName)
-				strBefore = self.sshClient.before
-				commandOutput = self.exceptFirstLine(strBefore)
-				exitRet = self.getPreCommandExitValue()
-				if 0 == exitRet['code'] and 0 == exitRet['output']: 
-					return {'code':0, 'output':PySSHUtil.dealScpOutput(commandOutput)}
-				else:
-					logger.error("hostName:%s, scp exec finished, but can not pass validation", self.hostName)
-					return {'code':-5007, 'output':commandOutput}
-			elif q == 3:
-				logger.error("hostName:%s, scp EOF occurs, then send control signal C" % (self.hostName, timeout))
-				#self.sshClient.sendcontrol('c')
-				#self.sshClient.sendintr()
-				self.clearOutputBuffer()
-				return {'code': -5008, 'output':"scp command failed, EOF occurs"}
-			else:
-				logger.error("hostName:%s, scp timeout[%d] occurs, then send control signal C" % (self.hostName, timeout))
-				#self.sshClient.sendcontrol('c')
-				self.sshClient.sendintr()
-				self.clearOutputBuffer()
-				return {'code': -5009, 'output':"scp command failed, timeout[%d] occurs" % timeout}
-		elif i == 2 or i == 3:
-			logger.warning("hostName:%s, scp failed, send control signal C, then retry again" % self.hostName)
-			#self.sshClient.sendcontrol('c')
-			self.sshClient.sendintr()
-			self.clearOutputBuffer()
-			return self.execScpCommand(scpCommand, scpPassword, timeout)
-		elif i == 4:
-			logger.warning("hostName:%s, scp finished, password no need, then validation" % self.hostName)
-			strBefore = self.sshClient.before
-			commandOutput = self.exceptFirstLine(strBefore)
-			exitRet = self.getPreCommandExitValue()
-			if 0 == exitRet['code'] and 0 == exitRet['output']: 
-				return {'code':0, 'output':PySSHUtil.dealScpOutput(commandOutput)}
-			else:
-				logger.error("hostName:%s, scp exec finished, but can not pass validation", self.hostName)
-				return {'code':-5010, 'output':commandOutput}
-		elif i == 5:
-			logger.error("hostName:%s, scp EOF occurs, then send control signal C" % (self.hostName, timeout))
-			#self.sshClient.sendcontrol('c')
-			#self.sshClient.sendintr()
-			self.clearOutputBuffer()
-			return {'code': -5008, 'output':"scp command failed, EOF occurs"}
-		else:
-			logger.error("hostName:%s, scp timeout[%d] occurs, then send control signal C" % (self.hostName, timeout))
-			#self.sshClient.sendcontrol('c')
-			self.sshClient.sendintr()
-			self.clearOutputBuffer()
-			return {'code': -5009, 'output':"scp command failed, timeout[%d] occurs" % timeout}
-
 
 	def exceptFirstLine(self, s):
 		ret = ""
@@ -818,7 +219,7 @@ class PySSH:
 				ret = l[1]
 		else:
 			ret = s
-		logger.debug("hostName:%s, exceptFirstLine, origin:%r, result:%r", self.hostName, s, ret)
+		#logger.debug("hostName:%s, exceptFirstLine, origin:%r, result:%r", self.hostName, s, ret)
 		return ret
 
 
@@ -877,8 +278,6 @@ class PySSH:
 			#	logger.error("hostName:%s, get prompt failed", self.hostName)
 			#	return ""
 				
-
-
 
 	def getPromptByCompare(self):
 
@@ -1001,6 +400,486 @@ class PySSH:
 			else:
 				return ""
 
+
+
+
+
+
+
+	def getPreCommandExitValue(self):
+		#logger.debug('hostName:%s, getPreCommandExitValue starts', self.hostName)
+		# clear output before get
+		#self.clearOutputBuffer()
+		self.sshClient.sendline('echo $?')
+		#time.sleep(SLEEP_TIME_AFTER_SENDLINE)
+		qqT = self.sshClient.expect([self.prompt, pexpect.EOF, pexpect.TIMEOUT], timeout = 10)
+		#logger.debug("hostName:%(hostName)s, command:%(command)s, expect['%(prompt)s', pexpect.EOF, pexpect.TIMEOUT], timeout=%(timeout)r, index=%(index)d, before:%(before)r, after:%(after)r, buffer:%(buffer)r" % {'hostName':self.hostName, 'command':'echo $?', 'prompt':self.prompt, 'timeout':5, 'index':qqT, 'before':self.sshClient.before, 'after':self.sshClient.after, 'buffer':self.sshClient.buffer})
+		if 0 == qqT:
+			#tBf = self.sshClient.before
+			#tBf = re.sub(r'warning:.*Connection Timed Out\r\r\n', '', tBf)
+			#tBf = re.sub(r'nohup: ignoring input and appending output to(.*?)\r\n', '', tBf)
+
+			#filter special string for output
+			tBf = self.filterSpecialStringForOutput(self.sshClient.before)
+
+			tOp = self.exceptFirstLine(tBf).strip()
+			try:
+				tOpInt = int(tOp)
+				return {'code':0, 'output':tOpInt}
+			except Exception, e:
+				logger.exception("hostName:%s, transfer to int occursexception" % self.hostName)
+				#self.sshClient.sendintr()
+				self.clearOutputBuffer()
+				return {'code':-6006, 'output':'exception occurs when getting pre command exit value, reason:%r' % tOp}
+		elif 1 == qqT:
+			logger.error("hostName:%s, getPreCommandExitValue EOF occurs", self.hostName)
+			#self.sshClient.sendintr()
+			self.clearOutputBuffer()
+			return {'code':-6004, 'output':'EOF occurs when getting pre command exit value'}
+		else:
+			logger.error("hostName:%s, getPreCommandExitValue timeout occurs", self.hostName)
+			self.sshClient.sendintr()
+			self.clearOutputBuffer()
+			return {'code':-6005, 'output':'TIMEOUT occurs when getting pre command exit value'}
+
+
+
+
+
+
+
+
+
+	def getCommandOutput(self, originOutput):
+		# originOutput often is self.sshClient.before
+
+		##logger.debug('originOutput:%r', originOutput)
+		## filter scp timeout output after sigint signal
+		#tStr = re.sub(r'warning:.*Connection Timed Out\r\r\n', '', originOutput)
+		##logger.debug('after filter scp warning, output:%r', tStr)
+		#tStr = re.sub(r'nohup: ignoring input and appending output to(.*?)\r\n', '', tStr)
+		##logger.debug('after filter nohup output, output:%r', tStr)
+
+		#filter special string for output
+		tStr = self.filterSpecialStringForOutput(originOutput)
+
+		commandOutput = self.exceptFirstLine( tStr )
+		return commandOutput
+
+
+
+	### 后面的选项，在操作机与SSH机之间执行scp命令时可以用上，其余时间一般用不上
+	def execLocalScpCommand(self, scpCommand, scpPassword=None, timeout=-1, validation=None, validationInLocal=False, validationCommand=''):
+		if -1 == timeout: timeout = SCP_WAIT_TIMEOUT
+
+		logger.info('hostName:%s, execLocalScpCommand starts, scpCommand:%s, validation:%r, validationInLocal:%r, validationCommand:%s, timeout:%r' % (self.hostName, scpCommand, validation, validationInLocal, validationCommand, timeout))
+	
+		child = pexpect.spawn( scpCommand )
+	
+		#time.sleep(SLEEP_TIME_AFTER_SENDLINE)
+		i = child.expect(['(?i)yes/no', '(?i)password', '(?i)interrupted system call', pexpect.EOF, pexpect.TIMEOUT], timeout=timeout)
+		logger.info("hostName:%s, local scp command:%s, expect ['(?i)yes/no', '(?i)password', '(?i)interrupted system call', pexpect.EOF, pexpect.TIMEOUT], timeout=%r, index=%d, before:%r, after:%r, buffer:%r" % (self.hostName, scpCommand, timeout, i, child.before, child.after, child.buffer))
+		if i == 0:
+			logger.info("hostName:%s, exec local scp command, send yes", self.hostName)
+			# clear output before send
+			PySSHUtil.pexpectClearOutputBuffer(child)
+			child.sendline('yes')
+			#time.sleep(SLEEP_TIME_AFTER_SENDLINE)
+			i = child.expect(['(?i)yes/no', '(?i)password', '(?i)interrupted system call', pexpect.EOF, pexpect.TIMEOUT], timeout=timeout)
+			logger.info("hostName:%s, exec local scp command, send yes, expect ['(?i)yes/no', '(?i)password', '(?i)interrupted system call', pexpect.EOF, pexpect.TIMEOUT], timeout=%r, index=%d, before:%r, after:%r, buffer:%r" % (self.hostName, timeout, i, child.before, child.after, child.buffer))
+		if i == 1:
+			logger.info("hostName:%s, exec local scp command, need password", self.hostName)
+			if None is scpPassword:
+				child.sendintr()
+				PySSHUtil.pexpectClearOutputBuffer(child)
+				PySSHUtil.pexpectCloseSpawn(child)		### close before return
+				logger.error("hostName:%s, exec local scp command, need password, but not offer", self.hostName)
+				return {'code':-5011, 'output':'exec local scp command need password, but not offer'}
+			# clear output before send
+			PySSHUtil.pexpectClearOutputBuffer(child)
+			child.sendline( scpPassword )
+			#time.sleep(SLEEP_TIME_AFTER_SENDLINE)
+			q = child.expect(['(?i)password', '(?i)denied', pexpect.EOF, pexpect.TIMEOUT], timeout=timeout)
+			logger.info("hostName:%s, expect ['(?i)password', '(?i)denied', pexpect.EOF, pexpect.TIMEOUT], timeout=%r, index=%d, before:%r, after:%r, buffer:%r" % (self.hostName, timeout, q, child.before, child.after, child.buffer))
+			if q == 0 or q == 1:
+				logger.warn("hostName:%s, exec local scp command failed, password not correct or permission denied, then send control signal C" % self.hostName)
+				#child.sendcontrol('c')
+				child.sendintr()
+				PySSHUtil.pexpectClearOutputBuffer(child)
+				PySSHUtil.pexpectCloseSpawn(child)		### close before return
+				return {'code':-5012, 'output':'exec local scp command faild, because password is not correct or permission denied'}
+			elif q == 2:
+				childOutput = child.before
+				child.close()	# close child, then can get exit code from child.exitstatus
+				childReturnCode = child.exitstatus
+				logger.info("hostName:%s, exec local scp command:%s, executed completely, exit status:%d", self.hostName, scpCommand, childReturnCode)
+				if 0 == childReturnCode:
+					if validation is None or validation is False:
+						return {'code':0, 'output':'exec local scp command success, but no validation'}
+					else:
+						logger.info("hostName:%s, exec local scp command pass first step, wait to validation" % self.hostName)
+
+						if True is validationInLocal:
+							tRet = self.execLocalCommand(validationCommand)
+						else:
+							tRet = self.execCommand(validationCommand)
+						logger.info("hostName:%s, exec local scp command validation ret:%r", self.hostName, tRet)
+
+						if 0 == tRet['code']:
+							return {'code':0, 'output':'exec local scp command success and pass validation'}
+						else:
+							return {'code':-5013, 'output':'exec local scp command failed, can not pass validation comman:%s, reason:%r' % (validationCommand, tRet['output'])}
+				else:
+					logger.error("hostName:%s, exec local scp command:%s, executed completely, exit status:%d", self.hostName, scpCommand, childReturnCode)
+					return {'code':-5022, 'output':'exec local scp command failed, exit value not 0, reason:%r' % childOutput}
+			else:
+				logger.error("hostName:%s, exec local scp command failed, timeout[%r] occurs, then send control signal C", self.hostName, timeout)
+				#child.sendcontrol('c')
+				child.sendintr()
+				PySSHUtil.pexpectClearOutputBuffer(child)
+				PySSHUtil.pexpectCloseSpawn(child)		### close before return
+				return {'code':-5014, 'output':'exec local scp command failed, timeout occurs'}
+		elif i == 2:
+			logger.error("hostName:%s, exec local scp command failed, send control signal C, then recall execLocalScpCommand" % self.hostName)
+			#child.sendcontrol('c')
+			child.sendintr()
+			PySSHUtil.pexpectClearOutputBuffer(child)
+			PySSHUtil.pexpectCloseSpawn(child)		### close before return
+			return self.execLocalScpCommand(scpCommand=scpCommand, scpPassword=scpPassword, validation=validation, validationInLocal=validationInLocal, validationCommand=validationCommand, timeout=timeout)
+		elif i == 3:
+			childOutput = child.before
+			child.close()	# close child, then can get exit code from child.exitstatus
+			childReturnCode = child.exitstatus
+			logger.info("hostName:%s, exec local scp command:%s, executed completely, exit status:%d", self.hostName, scpCommand, childReturnCode)
+			if 0 == childReturnCode:
+				if validation is None or validation is False:
+					return {'code':0, 'output':'exec local scp command success, but no validation'}
+				else:
+					logger.info("hostName:%s, exec local scp command pass first step, wait to validation" % self.hostName)
+					if True is validationInLocal:
+						tRet = self.execLocalCommand(validationCommand)
+					else:
+						tRet = self.execCommand(validationCommand)
+					logger.info("hostName:%s, exec local scp command validation ret:%r", self.hostName, tRet)
+					if 0 == tRet['code']:
+						return {'code':0, 'output':'exec local scp command success and pass validation'}
+					else:
+						return {'code':-5015, 'output':'exec local scp command failed, can not pass validation, reason:%r' % tRet['output']}
+			else:
+				logger.error("hostName:%s, exec local scp command:%s, executed completely, exit status:%d", self.hostName, scpCommand, childReturnCode)
+				return {'code':-5022, 'output':'exec local scp command failed, exit value not 0, reason:%r' % childOutput}
+		elif i == 4:
+			logger.warn("hostName:%s, exec local scp command failed, timeout[%r] occurs, then send control signal C", self.hostName, timeout)
+			#child.sendcontrol('c')
+			child.sendintr()
+			PySSHUtil.pexpectClearOutputBuffer(child)
+			PySSHUtil.pexpectCloseSpawn(child)		### close before return
+			return {'code':-5016, 'output':'exec local scp command failed, timeout occurs'}
+
+
+
+	def execLocalCommand(self, command, commandExt=None, timeout=-1):
+		logger.info("hostName:%s, exec local command, parameter:command:%s, timeout:%r", self.hostName, command, timeout)
+		#deal parameter
+		if None is commandExt: commandExt = dict()
+		
+		tEvents = dict()
+		if 'SCP_PASSWD' in commandExt:
+			tEvents[ '(?i)password' ] = "%s" % commandExt['SCP_PASSWD']
+
+		# add \n to every item in events
+		for (k, v) in tEvents.items():
+			tEvents[ k ] = "%s\n" % v
+
+		try:
+			logger.debug('events:%r', tEvents)
+
+			if command.startswith('scp '):
+				tScpPasswd = None
+				if 'SCP_PASSWD' in commandExt:
+					tScpPasswd = commandExt['SCP_PASSWD']
+				scpRet = self.execLocalScpCommand(scpCommand=command, scpPassword=tScpPasswd, timeout=timeout, validation=None)
+				return scpRet
+			else:
+				tCommand = '/bin/sh -c "%s"' % command
+				(commandOutput, exitCode) = pexpect.run(command=tCommand, events=tEvents, timeout=timeout, withexitstatus=True)
+				logger.debug('hostName:%s, local command:%s, output:%r, exit:%d', self.hostName, command, commandOutput, exitCode)
+				if 0 != exitCode:
+					return {'code':-8001, 'output':commandOutput}
+				else:
+					return {'code':exitCode, 'output':commandOutput}
+		except:
+			logger.exception("hostName:%s, exec local command exception", self.hostName)
+			return {'code': -8002, 'output':'exception occurs'}
+
+
+
+	def execScpCommand(self, scpCommand, scpPassword = None, timeout = -1):
+		if -1 == timeout:
+			timeout = SCP_WAIT_TIMEOUT
+
+		logger.info("hostName:%s, exec scp command starts, parameter:scpCommand:%s, timeout:%r" % (self.hostName, scpCommand, timeout))
+
+		# clear output before exec command
+		#self.clearOutputBuffer()
+
+		self.sshClient.sendline(scpCommand)
+		#time.sleep(SLEEP_TIME_AFTER_SENDLINE)
+		i = self.sshClient.expect(['(?i)yes/no', '(?i)password', '(?i)authentication failed', '(?i)interrupted system call', self.prompt, pexpect.EOF, pexpect.TIMEOUT], timeout=timeout)
+		logger.info("hostName:%(hostName)s, command:%(command)s, expect['(?i)yes/no', '(?i)password', '(?i)authentication failed', '(?i)interrupted system call', '%(prompt)s', pexpect.EOF, pexpect.TIMEOUT], timeout=%(timeout)r, index=%(index)d, before:%(before)r, after:%(after)r, buffer:%(buffer)r" % {'hostName':self.hostName, 'command':scpCommand, 'prompt':self.prompt, 'timeout':timeout, 'index':i, 'before':self.sshClient.before, 'after':self.sshClient.after, 'buffer':self.sshClient.buffer})
+		if i == 0:
+			logger.info("hostName:%s, exec scp, send yes", self.hostName)
+			# clear output before exec command
+			self.clearOutputBuffer()
+			self.sshClient.sendline('yes')
+			#time.sleep(SLEEP_TIME_AFTER_SENDLINE)
+			i = self.sshClient.expect(['(?i)yes/no', '(?i)password', '(?i)authentication failed', '(?i)interrupted system call',self.prompt, pexpect.EOF, pexpect.TIMEOUT], timeout=timeout)
+			logger.info("hostName:%(hostName)s, command:%(command)s, expect['(?i)yes/no', '(?i)password', '(?i)authentication failed', '(?i)interrupted system call', '%(prompt)s', pexpect.EOF, pexpect.TIMEOUT], timeout=%(timeout)r, index=%(index)d, before:%(before)r, after:%(after)r, buffer:%(buffer)r" % {'hostName':self.hostName, 'command':scpCommand, 'prompt':self.prompt, 'timeout':timeout, 'index':i, 'before':self.sshClient.before, 'after':self.sshClient.after, 'buffer':self.sshClient.buffer})
+		if i == 1:
+			logger.info("hostName:%s, exec scp, need password", self.hostName)
+			if None is scpPassword:
+				logger.error("hostName:%s, need password, but does not offer password", self.hostName)
+				#self.sshClient.sendintr()
+				#self.clearOutputBuffer()
+				if not self.dealInvalidPassword():
+					return {'code':-5033, 'output':'scp command can not deal with password input duplicately'}
+				return {'code':-5005, 'output':'scp command need password, but not offer'}
+			# clear output before exec command
+			self.clearOutputBuffer()
+			self.sshClient.sendline(scpPassword)
+			#time.sleep(SLEEP_TIME_AFTER_SENDLINE)
+			q = self.sshClient.expect(['(?i)password', '(?i)denied', self.prompt, pexpect.EOF, pexpect.TIMEOUT], timeout=timeout)
+			logger.info("hostName:%(hostName)s, send password, expect['(?i)password', '(?i)denied', '%(prompt)s', pexpect.EOF, pexpect.TIMEOUT], timeout=%(timeout)r, index=%(index)d, before:%(before)r, after:%(after)r, buffer:%(buffer)r" % {'hostName':self.hostName, 'prompt':self.prompt, 'timeout':timeout, 'index':q, 'before':self.sshClient.before, 'after':self.sshClient.after, 'buffer':self.sshClient.buffer})
+			if q == 0 or q == 1:
+				logger.error("hostName:%s, scp command:%s, password not correct, then send control signal C", self.hostName, scpCommand)
+				#self.sshClient.sendcontrol('c')
+				#self.sshClient.sendintr()
+				#self.clearOutputBuffer()
+				if not self.dealInvalidPassword():
+					return {'code':-5033, 'output':'scp command can not deal with password input duplicately'}
+				return {'code':-5006, 'output':'scp command faild, because password is not correct or permission denied'}
+			elif q == 2:
+				logger.info("hostName:%s, scp exec finished, then validation", self.hostName)
+				strBefore = self.sshClient.before
+				commandOutput = self.exceptFirstLine(strBefore)
+				exitRet = self.getPreCommandExitValue()
+				if 0 == exitRet['code'] and 0 == exitRet['output']: 
+					return {'code':0, 'output':PySSHUtil.dealScpOutput(commandOutput)}
+				else:
+					logger.error("hostName:%s, scp exec finished, but can not pass validation", self.hostName)
+					return {'code':-5007, 'output':commandOutput}
+			elif q == 3:
+				logger.error("hostName:%s, scp EOF occurs, then send control signal C" % (self.hostName, timeout))
+				#self.sshClient.sendcontrol('c')
+				#self.sshClient.sendintr()
+				self.clearOutputBuffer()
+				return {'code': -5008, 'output':"scp command failed, EOF occurs"}
+			else:
+				logger.error("hostName:%s, scp timeout[%d] occurs, then send control signal C" % (self.hostName, timeout))
+				#self.sshClient.sendcontrol('c')
+				self.sshClient.sendintr()
+				self.clearOutputBuffer()
+				return {'code': -5009, 'output':"scp command failed, timeout[%d] occurs" % timeout}
+		elif i == 2 or i == 3:
+			logger.warning("hostName:%s, scp failed, send control signal C, then retry again" % self.hostName)
+			#self.sshClient.sendcontrol('c')
+			self.sshClient.sendintr()
+			self.clearOutputBuffer()
+			return self.execScpCommand(scpCommand, scpPassword, timeout)
+		elif i == 4:
+			logger.warning("hostName:%s, scp finished, password no need, then validation" % self.hostName)
+			strBefore = self.sshClient.before
+			commandOutput = self.exceptFirstLine(strBefore)
+			exitRet = self.getPreCommandExitValue()
+			if 0 == exitRet['code'] and 0 == exitRet['output']: 
+				return {'code':0, 'output':PySSHUtil.dealScpOutput(commandOutput)}
+			else:
+				logger.error("hostName:%s, scp exec finished, but can not pass validation", self.hostName)
+				return {'code':-5010, 'output':commandOutput}
+		elif i == 5:
+			logger.error("hostName:%s, scp EOF occurs, then send control signal C" % (self.hostName, timeout))
+			#self.sshClient.sendcontrol('c')
+			#self.sshClient.sendintr()
+			self.clearOutputBuffer()
+			return {'code': -5008, 'output':"scp command failed, EOF occurs"}
+		else:
+			logger.error("hostName:%s, scp timeout[%d] occurs, then send control signal C" % (self.hostName, timeout))
+			#self.sshClient.sendcontrol('c')
+			self.sshClient.sendintr()
+			self.clearOutputBuffer()
+			return {'code': -5009, 'output':"scp command failed, timeout[%d] occurs" % timeout}
+
+
+
+	def execCommand(self, command, commandExt = None, timeout = -1):
+		"""
+		if the value of timeout is -1, then expect will use self.timeout
+		code:
+		0 : success
+		"""
+		logger.info("hostName:%s, parameter:command:%s, timeout:%r", self.hostName, command, timeout)
+
+		# deal parameters
+		if None is commandExt: commandExt = dict()
+			
+		if 0 == cmp('pyssh_scp_local_to_ssh_pull_push', command):
+			return self.scpLocalToSelfPullPush(localPath=commandExt['LOCAL_PATH'], sshHostPath=commandExt['SSH_HOST_PATH'], localPassword=commandExt['LOCAL_PASSWD'], sourceIsDir=commandExt['SOURCE_IS_DIR'], localIntf=commandExt['LOCAL_INTF'], localPort=commandExt['LOCAL_PORT'], timeout=timeout)
+		elif 0 == cmp('pyssh_scp_local_to_ssh_push_pull', command):
+			return self.scpLocalToSelfPushPull(localPath=commandExt['LOCAL_PATH'], sshHostPath=commandExt['SSH_HOST_PATH'], localPassword=commandExt['LOCAL_PASSWD'], sourceIsDir=commandExt['SOURCE_IS_DIR'], localIntf=commandExt['LOCAL_INTF'], localPort=commandExt['LOCAL_PORT'], timeout=timeout)
+		elif 0 == cmp('pyssh_scp_ssh_to_local_pull_push', command):
+			return self.scpSelfToLocalPullPush(localPath=commandExt['LOCAL_PATH'], sshHostPath=commandExt['SSH_HOST_PATH'], localPassword=commandExt['LOCAL_PASSWD'], sourceIsDir=commandExt['SOURCE_IS_DIR'], localIntf=commandExt['LOCAL_INTF'], localPort=commandExt['LOCAL_PORT'], timeout=timeout)
+		elif 0 == cmp('pyssh_scp_ssh_to_local_push_pull', command):
+			return self.scpSelfToLocalPushPull(localPath=commandExt['LOCAL_PATH'], sshHostPath=commandExt['SSH_HOST_PATH'], localPassword=commandExt['LOCAL_PASSWD'], sourceIsDir=commandExt['SOURCE_IS_DIR'], localIntf=commandExt['LOCAL_INTF'], localPort=commandExt['LOCAL_PORT'], timeout=timeout)
+
+		elif 0 == cmp('pyssh_add_user', command):
+			tUserPassword = None
+			if 'USER_PWD' in commandExt:
+				tUserPassword = commandExt['USER_PWD']
+			tUserHomePath = None
+			if 'USER_HOME' in commandExt:
+				tUserHomePath = commandExt['USER_HOME']
+			tGroupName = None
+			if 'GROUP_NAME' in commandExt:
+				tGroupName = commandExt['GROUP_NAME']
+			return self.addUser(userName=commandExt['USER_NAME'], userPassword=tUserPassword, userHomePath=tUserHomePath, groupName=tGroupName)
+		elif command.startswith('scp '):
+			scpCommand = command
+			if 'SCP_PASSWD' in commandExt:
+				scpPassword = commandExt['SCP_PASSWD']
+			else:
+				scpPassword = None
+			return self.execScpCommand(scpCommand, scpPassword, timeout=timeout)
+		else:
+			self.sshClient.sendline(command)
+			#time.sleep(SLEEP_TIME_AFTER_SENDLINE)
+			i = self.sshClient.expect([self.prompt, pexpect.EOF, pexpect.TIMEOUT], timeout)
+			logger.info("hostName:%(hostName)s, command:%(command)s, commandExt:%(commandExt)r, expect['%(prompt)s', pexpect.EOF, pexpect.TIMEOUT], timeout=%(timeout)r, index=%(index)d, before:%(before)r, after:%(after)r, buffer:%(buffer)r" % {'hostName':self.hostName, 'command':command, 'commandExt':commandExt, 'prompt':self.prompt, 'timeout':timeout, 'index':i, 'before':self.sshClient.before, 'after':self.sshClient.after, 'buffer':self.sshClient.buffer})
+			if i == 0:
+				commandOutput = self.getCommandOutput( self.sshClient.before )
+
+				exitRet = self.getPreCommandExitValue()
+				if 0 != exitRet['code']:
+					logger.error('hostName:%s, get command exec result failed, command:%s, get exit value result:%r', self.hostName, command, exitRet)
+					return {'code':exitRet['code'], 'output':'error occurs when getting exit value for command:%s, reason:%r' % (command, exitRet['output'])}
+				else:
+					if 0 == exitRet['output']:
+						logger.info('hostName:%s, exec command success, command:%s, output:%r', self.hostName, command, commandOutput)
+						return {'code':0, 'output':commandOutput}
+					else:
+						logger.error('hostName:%s, exec command finished, but exit value is not 0, command:%s, output:%r', self.hostName, command, commandOutput)
+						return {'code':-6009, 'output':commandOutput}
+			elif i == 1:
+				logger.error("hostName:%s, execute command, EOF occur, then send control signal C", self.hostName)
+				#self.sshClient.sendcontrol('c')
+				#self.sshClient.sendintr()
+				self.clearOutputBuffer()
+				return {'code':-6007, 'output':'EOF occurs when executing command:%s' % command}
+			else:
+				logger.error("hostName:%s, execute command, timeout occur, then send control signal C", self.hostName)
+				#self.sshClient.sendcontrol('c')
+				self.sshClient.sendintr()
+				self.clearOutputBuffer()
+				return {'code':-6008, 'output':'timeout occurs when executing command:%s' % command}
+
+
+	### 当在输入密码时无密码或密码不对时，给出多次的无效密码，让其结束需要密码的流程，而不是使用ctrl+C的中断
+	def dealInvalidPassword(self, timeout=-1):
+		logger.debug('hostName:%s, dealInvalidPassword starts', self.hostName)
+		invalidPassword = 'PYSSH_ab@#$BEDBE_PYSSH'
+		while True:
+			self.sshClient.sendline( invalidPassword )
+			i = self.sshClient.expect(['(?i)password', self.prompt, pexpect.EOF, pexpect.TIMEOUT], timeout=timeout)
+			logger.debug("hostName:%(hostName)s, invalidPassword:%(invalidPassword)s, expect['(?i)password', '%(prompt)s', pexpect.EOF, pexpect.TIMEOUT], timeout=%(timeout)r, index=%(index)d, before:%(before)r, after:%(after)r, buffer:%(buffer)r" % {'hostName':self.hostName, 'invalidPassword':invalidPassword, 'prompt':self.prompt, 'timeout':timeout, 'index':i, 'before':self.sshClient.before, 'after':self.sshClient.after, 'buffer':self.sshClient.buffer})
+			if 0 == i:
+				continue
+			elif 1 == i:
+				return True
+			elif 2 == i or 3 == i:
+				return False
+				
+				
+
+
+
+	def login(self):
+		"""
+		Return : int
+		0: login success, and get the correct prompt which is stored in the attribute of prompt
+		-4001: password is not correct
+		-4002: ssh connection success, but can not get the prompt
+		-4003: EOF
+		-4004: timeout
+		"""
+
+		sshLoginCommand = ""
+		if self.port:
+			sshLoginCommand = 'ssh -l %s -p %d %s' % (self.user, self.port, self.hostName)
+		else:
+			sshLoginCommand = 'ssh -l %s %s' % (self.user, self.hostName)
+		logger.info("hostName:%s, begin ssh login, ssh login command:%s", self.hostName, sshLoginCommand)
+
+		self.sshClient = pexpect.spawn(sshLoginCommand, timeout = self.timeout, maxread=81920)
+		#self.sshClient.logfile = open(os.path.join(os.path.dirname(os.path.realpath(__file__)), 'logs/pexpect.log'), 'w')
+
+		i = self.sshClient.expect(['(?i)yes/no', '(?i)password', '(?i)last login', '(?i)welcome', '(?i)interrupted system call', pexpect.EOF, pexpect.TIMEOUT], timeout=LOGIN_WAIT_TIMEOUT)
+		logger.info("hostName:%(hostName)s, command:%(command)s, expect['(?i)yes/no', '(?i)password', '(?i)last login', '(?i)welcome', '(?i)interrupted system call', pexpect.EOF, pexpect.TIMEOUT], timeout=%(timeout)d, index=%(index)d, before:%(before)r, after:%(after)r, buffer:%(buffer)r" % {'hostName':self.hostName, 'command':sshLoginCommand, 'timeout':LOGIN_WAIT_TIMEOUT, 'index':i, 'before':self.sshClient.before, 'after':self.sshClient.after, 'buffer':self.sshClient.buffer})
+		if i == 0:
+			logger.info('hostName:%s, ssh logining, send yes', self.hostName)
+			self.sshClient.sendline('yes')
+			#time.sleep(SLEEP_TIME_AFTER_SENDLINE)
+			i = self.sshClient.expect(['(?i)yes/no', '(?i)password', '(?i)last login', '(?i)welcome', '(?i)interrupted system call', pexpect.EOF, pexpect.TIMEOUT], timeout=LOGIN_WAIT_TIMEOUT)
+			logger.info("hostName:%(hostName)s, command:%(command)s, expect['(?i)yes/no', '(?i)password', '(?i)last login', '(?i)welcome', '(?i)interrupted system call', pexpect.EOF, pexpect.TIMEOUT], timeout=%(timeout)d, index=%(index)d, before:%(before)r, after:%(after)r, buffer:%(buffer)r" % {'hostName':self.hostName, 'command':sshLoginCommand, 'timeout':LOGIN_WAIT_TIMEOUT, 'index':i, 'before':self.sshClient.before, 'after':self.sshClient.after, 'buffer':self.sshClient.buffer})
+		if i == 1:
+			logger.info('hostName:%s, ssh loging, send password', self.hostName)
+
+			self.needPassword = True
+
+			self.sshClient.sendline(self.password)
+			#time.sleep(SLEEP_TIME_AFTER_SENDLINE)
+			p = self.sshClient.expect(['(?i)password', '(?i)denied', '(?i)last login', '(?i)welcome', pexpect.EOF, pexpect.TIMEOUT], timeout=LOGIN_WAIT_TIMEOUT)
+			logger.info("hostName:%(hostName)s, command:%(command)s, expect['(?i)password', '(?i)denied', '(?i)last login', pexpect.EOF, pexpect.TIMEOUT], timeout=%(timeout)d, index=%(index)d, before:%(before)r, after:%(after)r, buffer:%(buffer)r" % {'hostName':self.hostName, 'command':sshLoginCommand, 'timeout':LOGIN_WAIT_TIMEOUT, 'index':p, 'before':self.sshClient.before, 'after':self.sshClient.after, 'buffer':self.sshClient.buffer})
+			if p == 0 or p == 1:
+				logger.error("hostName:%s, ssh password wrong", self.hostName)
+				return {'code':-4001, 'output':'password is not correct'}
+			elif p == 2 or p == 3:
+				logger.info("hostName:%s, ssh login success, begin get prompt", self.hostName)
+				self.prompt = self.getPrompt()
+				if self.prompt:
+					logger.info("hostName:%s, get prompt success:%r" % (self.hostName, self.prompt))
+					return {'code':0, 'output':'login success'}
+				else:
+					logger.error("hostName:%s, can not get prompt" % self.hostName)
+					return {'code':-4002, 'output':'login success, but can not get the prompt'}
+			elif p == 4:
+				logger.error("hostName:%s, ssh login failed, EOF occurs", self.hostName)
+				return {'code':-4003, 'output':'login EOF occurs'}
+			else:
+				logger.error("hostName:%s, ssh login failed, timeout occurs", self.hostName)
+				return {'code':-4004, 'output':'login timeout occurs'}
+		elif i == 2 or i == 3:
+			logger.info("hostName:%s, ssh login success, and don't need password" % self.hostName)
+
+			self.needPassword = False
+
+			self.prompt = self.getPrompt()
+			if self.prompt:
+				logger.info("hostName:%s, get prompt success:%r" % (self.hostName, self.prompt))
+				return {'code':0, 'output':'login success'}
+			else:
+				logger.error("hostName:%s, can not get prompt" % self.hostName)
+				return {'code':-4002, 'output':'can not get the prompt'}
+		elif i == 4:
+			logger.warning("hostName:%s, interrupted system call occurs, recall login method", self.hostName)
+			return self.login()
+		elif i == 5:
+			logger.error("hostName:%s, ssh login failed, EOF occurs", self.hostName)
+			return {'code':-4003, 'output':'login EOF occurs'}
+		else:
+			logger.error("hostName:%s, ssh login failed, timeout occurs", self.hostName)
+			return {'code':-4004, 'output':'login timeout occurs'}
+					
+
+
 	def get64or32(self):
 		cmdRet = self.execCommand('uname -m | grep 64 | wc -l')
 		tOutput = cmdRet['output'].strip()
@@ -1032,144 +911,110 @@ class PySSH:
 			return {'code':0, 'path':cmdRet['output'].strip()}
 
 
-
-	def scpFromLocalPull(self,  localPath, sshHostPath, localPassword=None, localIsdir=False, localIntf=None, localPort=None, timeout=-1):
-		if None is localIntf:
-			localIntf = LOCAL_INTERFACE
-		# get local user name
-		try:
-			localUser = getpass.getuser()
-		except:
-			logger.exception('hostName:%s, get local user name occurs exception', self.hostName)
-			return {'code':-5001, 'output':'get local user name occurs exception'}
-		# get local ip address
-		try:
-			localIP = util.getIP( localIntf )
-			if None is localIP:
-				return {'code':-5002, 'output':'can not get local ip address'}
-		except:
-			logger.exception('hostName:%s, get local ip address occurs exception', self.hostName)
-			return {'code':-5003, 'output':'get local ip address occurs exception'}
-		# local path, whether absolute path
-		if not os.path.isabs(localPath):
-			logger.error('hostName:%s, local path [%s] should be absolute path', self.hostName, localPath)
-			return {'code': -5004, 'output':'localPath should be absolute path'}
-		# localIsdir
-		tR = ""
-		if localIsdir:
-			tR = "-r"
-		# localPort
-		tLPort = ""
-		if not None is localPort:
-			tLPort = "-P %d" % localPort
-		#begin pull first
-		# test pull from local
-		if True is self.scpPullFromLocalFlag or (None is self.scpPullFromLocalFlag and self.scpPullFromLocalTest(sourceUser=localUser, sourcePassword=localPassword, sourceIfName=localIntf, sourcePort=localPort)):
-			scpPullCommand = "scp %(R)s %(P)s %(localUser)s@%(localIP)s:%(localPath)s %(sshHostPath)s" % {
-				'R' : tR,
-				'P' : tLPort,
-				'localUser' : localUser,
-				'localIP' : localIP,
-				'localPath' : localPath,
-				'sshHostPath' : sshHostPath,
-			}
-			scpRet = self.execScpCommand(scpPullCommand, localPassword, timeout)
-			if 0 != scpRet['code']:
-				logger.error('hostName:%s, scp from local pull failed, command:%s, result:%r', self.hostName, scpPullCommand, scpRet)
-				return {'code':-5018, 'output':'scp pull from local failed, error code:%d, reason:%r' % (scpRet['code'], scpRet['output'])}
-			else:
-				logger.info('hostName:%s, scp from local pull success, command:%s, result:%r', self.hostName, scpPullCommand, scpRet)
-				return {'code':0, 'output':'scp pull from local success'}
-		else:
-			return {'code':-5019, 'output':'scp pull from local failed, can not pass test'}
-
-
-	def scpFromLocalPush(self,  localPath, sshHostPath, localIsdir=False, timeout=-1):
-		# test push from local
-		if True is self.scpPushFromLocalFlag or (None is self.scpPushFromLocalFlag and  self.scpPushFromLocalTest()):
-			# ssh port
-			tSPort = ""
-			if not None is self.port:
-				tSPort = "-P %d" % self.port
-			# deal ssh host path
-			tSPath = sshHostPath
-			if not os.path.isabs( sshHostPath ):
-				if 0 == cmp('.', sshHostPath[0]) and (1 == len(sshHostPath) or (1 < len(sshHostPath) and 0 == cmp('/', sshHostPath[1]))):
-					getCurDirPathRet = self.getCurrentDirPath()
-					if 0 != getCurDirPathRet['code']:
-						return {'code': getCurDirPathRet['code'], 'output':'can not get current dir path on ssh host, reason:%r' % getCurDirPathRet['output']}
-					else:
-						tSPath = "%s/%s" % (getCurDirPathRet['path'], sshHostPath[2:])
-				elif 0 == cmp('~', sshHostPath[0]) and (1 == len(sshHostPath) or (1 < len(sshHostPath) and 0 == cmp('/', sshHostPath[1]))):
-					getHomePathRet = self.getHomePath()
-					if 0 != getHomePathRet['code']:
-						return {'code': getCurDirPathRet['code'], 'output':'can not get current dir path on ssh host, reason:%r' % getCurDirPathRet['output']}
-					else:
-						tSPath = "%s/%s" % (getHomePathRet['path'], sshHostPath[2:])
-				elif sshHostPath.startswith('..') and (2 == len(sshHostPath) or (2 < len(sshHostPath) and 0 == cmp('/', sshHostPath[2]))):
-					getCurDirPathRet = self.getCurrentDirPath()
-					if 0 != getCurDirPathRet['code']:
-						return {'code': getCurDirPathRet['code'], 'output':'can not get current dir path on ssh host, reason:%r' % getCurDirPathRet['output']}
-					else:
-						tSPath = "%s/%s" % (getCurDirPathRet['path'], sshHostPath)
-				elif sshHostPath.startswith('$HOME') and (5 == len(sshHostPath) or (5 < len(sshHostPath) and 0 == cmp('/', sshHostPath[5]))):
-					getHomePathRet = self.getHomePath()
-					if 0 != getHomePathRet['code']:
-						return {'code': getHomePathRet['code'], 'output':'can not get home path on ssh host, reason:%r' % getHomePathRet['output']}
-					else:
-						tSPath = "%s/%s" % (getHomePathRet['path'], sshHostPath[6:])
-				else:
-					return {'code':-24, 'output':'can not get absolute ssh host path:%s' % sshHostPath}
-			# localIsdir
-			tR = ""
-			if localIsdir:
-				tR = "-r"
-			scpPushCommand = "scp %(R)s %(P)s %(localPath)s %(sshUser)s@%(sshHost)s:%(sshHostPath)s" % {
-				'R' : tR,
-				'P' : tSPort,
-				'localPath' : localPath,
-				'sshUser' : self.user,
-				'sshHost' : self.hostName,
-				'sshHostPath' : tSPath,
-			}
-			scpRet = self.scpPushFromLocal(scpCommand=scpPushCommand, timeout=timeout)
-			if 0 != scpRet['code']:
-				logger.error('hostName:%s, scp from local push failed, command:%s, result:%r', self.hostName, scpPushCommand, scpRet)
-				return {'code':scpRet['code'], 'output':'scp push from local failed, reason:%r' % scpRet['output']}
-			else:
-				logger.info('hostName:%s, scp from local push success, command:%s, result:%r', self.hostName, scpPushCommand, scpRet)
-				return {'code':0, 'output':'scp push from local success'}
-		else:
-			return {'code':-5020, 'output':'scp push from local failed, can not pass test'}
-			
 	
-	def scpFromLocalPullPush(self,  localPath, sshHostPath, localPassword=None, localIsdir=False, localIntf=None, localPort=None, timeout=-1):
-		pullRet = self.scpFromLocalPull(localPath=localPath, sshHostPath=sshHostPath, localPassword=localPassword, localIsdir=localIsdir, localIntf=localIntf, localPort=localPort, timeout=timeout)
-		if 0 == pullRet['code']:
-			return pullRet
-		else:
-			self.scpPullFromLocalFlag = False
-			pushRet = self.scpFromLocalPush(localPath=localPath, sshHostPath=sshHostPath, localIsdir=localIsdir, timeout=timeout)
-			if 0 == pushRet['code']:
-				return pushRet
+	def getAbsolutePathFromCurrentRelativePath(self, currentRelativePath):
+		if 0 == cmp('.', currentRelativePath[0]) and (1 == len(currentRelativePath) or (1 < len(currentRelativePath) and 0 == cmp('/', currentRelativePath[1]))):
+			getCurDirPathRet = self.getCurrentDirPath()
+			if 0 != getCurDirPathRet['code']:
+				return {'code': getCurDirPathRet['code'], 'output':'can not get current dir path on ssh host, reason:%r' % getCurDirPathRet['output']}
 			else:
-				self.scpPushFromLocalFlag = False
-		logger.error('hostName:%s, SCP_LOCAL_PULL_PUSH both direction failed', self.hostName)
-		return {'code':-5017, 'output':'both direction failed'}
+				absPath = "%s/%s" % (getCurDirPathRet['path'], currentRelativePath[2:])
+				return {'code':0, 'path':absPath}
+		elif 0 == cmp('~', currentRelativePath[0]) and (1 == len(currentRelativePath) or (1 < len(currentRelativePath) and 0 == cmp('/', currentRelativePath[1]))):
+			getHomePathRet = self.getHomePath()
+			if 0 != getHomePathRet['code']:
+				return {'code': getCurDirPathRet['code'], 'output':'can not get home path on ssh host, reason:%r' % getHomePathRet['output']}
+			else:
+				absPath = "%s/%s" % (getHomePathRet['path'], currentRelativePath[2:])
+				return {'code':0, 'path':absPath}
+		elif currentRelativePath.startswith('..') and (2 == len(currentRelativePath) or (2 < len(currentRelativePath) and 0 == cmp('/', currentRelativePath[2]))):
+			getCurDirPathRet = self.getCurrentDirPath()
+			if 0 != getCurDirPathRet['code']:
+				return {'code': getCurDirPathRet['code'], 'output':'can not get current dir path on ssh host, reason:%r' % getCurDirPathRet['output']}
+			else:
+				absPath = "%s/%s" % (getCurDirPathRet['path'], currentRelativePath)
+				return {'code':0, 'path':absPath}
+		elif currentRelativePath.startswith('$HOME') and (5 == len(currentRelativePath) or (5 < len(currentRelativePath) and 0 == cmp('/', currentRelativePath[5]))):
+			getHomePathRet = self.getHomePath()
+			if 0 != getHomePathRet['code']:
+				return {'code': getHomePathRet['code'], 'output':'can not get home path on ssh host, reason:%r' % getHomePathRet['output']}
+			else:
+				absPath = "%s/%s" % (getHomePathRet['path'], currentRelativePath[6:])
+				return {'code':0, 'path':absPath}
+		else:
+			getCurDirPathRet = self.getCurrentDirPath()
+			if 0 != getCurDirPathRet['code']:
+				return {'code': getCurDirPathRet['code'], 'output':'can not get current dir path on ssh host, reason:%r' % getCurDirPathRet['output']}
+			else:
+				absPath = "%s/%s" % (getCurDirPathRet['path'], currentRelativePath)
+				if not self.testPathExists( absPath ):
+					return {'code':-6022, 'output':'can not get absolute ssh host path:%s' % currentRelativePath}
+				else:
+					return {'code':0, 'path':absPath}
 
-	def scpFromLocalPushPull(self,  localPath, sshHostPath, localPassword=None, localIsdir=False, localIntf=None, localPort=None, timeout=-1):
-		pushRet = self.scpFromLocalPush(localPath=localPath, sshHostPath=sshHostPath, localIsdir=localIsdir, timeout=timeout)
-		if 0 == pushRet['code']:
-			return pushRet
+
+
+
+
+
+
+	def testPathExists(self, path):
+		#logger.debug("hostName:%s, test path exists start, path:%s", self.hostName, path)
+		tRet = self.execCommand('ls --color=never %s' % path)
+		if 0 != tRet['code']:
+			logger.error("hostName:%s, test path[%s] exists failed, reason:%r", self.hostName, path, tRet['output'])
+			return False
 		else:
-			self.scpPushFromLocalFlag = False
-			pullRet = self.scpFromLocalPull(localPath=localPath, sshHostPath=sshHostPath, localPassword=localPassword, localIsdir=localIsdir, localIntf=localIntf, localPort=localPort, timeout=timeout)
-			if 0 == pullRet['code']:
-				return pullRet
+			logger.debug("hostName:%s, test path[%s] exists success, output:%r", self.hostName, path, tRet['output'])
+			return True
+	
+
+	def isDirPath(self, path):
+		logger.debug("hostName:%s, test path whether dir or not, path:%s", self.hostName, path)
+		tRet = self.execCommand('ls --color=never -d %s/' % path)
+		if 0 != tRet['code']:
+			logger.error("hostName:%s, test directory[%s] exists failed, reason:%r", self.hostName, path, tRet['output'])
+			return False
+		else:
+			logger.debug("hostName:%s, test directory[%s] exists success, output:%r", self.hostName, path, tRet['output'])
+			return True
+
+	
+	def createTempFile(self, tempDir='/tmp', tryTimes=10):
+		### create source temp file in source temp dir ###
+		tryCounter = 0
+		while True:
+			if tryTimes < tryCounter:
+				logger.error('hostName:%s, can not create temp file, because of no proper temp name', self.hostName)
+				return {'code':-6024, 'output': 'can not create temp file, because of no proper temp name'}
+			sourceTempFileName = ''.join( random.sample('abcdefghijklmnopqrstuvwxyz1234567890', 25) )
+			sourceTempFilePath = os.path.join(tempDir, sourceTempFileName)
+			if self.testPathExists( sourceTempFilePath ):
+				tryCounter += 1
 			else:
-				self.scpPullFromLocalFlag = False
-		logger.error('hostName:%s, SCP_LOCAL_PUSH_PULL both direction failed', self.hostName)
-		return {'code':-5021, 'output':'both direction failed'}
+				break
+		createTempFileCommand = 'echo "temp file" > %s' % sourceTempFilePath
+		createRet = self.execCommand(createTempFileCommand)
+		if 0 != createRet['code']:
+			logger.error('hostName:%s, execute create temp command failed, command:%s, reason:%s' % (self.hostName, createTempFileCommand, createRet['output']))
+			return {'code':-6025, 'output':'create temp file error, reason:%r' % createRet['output']}
+		logger.info('hostName:%s, create temp file success:%s', self.hostName, sourceTempFilePath)
+		return {'code':0, 'path':sourceTempFilePath, 'name':sourceTempFileName}
+
+
+	def deleteFile(self, filePath):
+		deleteCommand = 'rm %s -f' % filePath
+		deleteRet = self.execCommand(deleteCommand)
+		if 0 != deleteRet['code']:
+			logger.error('hostName:%s, execute rm command failed, command:%s, reason:%r' % (self.hostName, deleteCommand, deleteRet))
+			return {'code':-6026, 'output':'delete failed, reason:%r' % deleteRet}
+		else:
+			logger.debug('hostName:%s, execute rm command success, command:%s', self.hostName, deleteCommand)
+			return {'code':0, 'output':''}
+
+
+
+
 
 	def userExists(self, userName):
 		'''
@@ -1247,7 +1092,7 @@ class PySSH:
 	def addUser(self, userName, userPassword=None, userHomePath=None, groupName=None):
 		if None is userName or not userName.strip():
 			return {'code':-6011, 'output':'error when creating user, userName can not be empty'}
-		# whether user alreay exists
+		# whether user already exists
 		userExistsRet = self.userExists( userName )
 		if 0 != userExistsRet['code']:
 			return userExistsRet
@@ -1285,6 +1130,573 @@ class PySSH:
 		else:
 			return self.changeUserPassword(userName=userName, userPassword=userPassword)
 			
+
+
+
+
+
+
+
+
+
+
+
+	def scpLocalToSelfWithPush(self,  localPath, sshHostPath, scpPort=None, timeout=-1, sourceIsDir=None):
+		if -1 == timeout: timeout = SCP_WAIT_TIMEOUT
+
+		## localPath should be absolute path
+		if not os.path.isabs( localPath ):
+			logger.error('hostName:%s, local path should be absolute path, local path:%s', self.hostName, localPath)
+			return {'code':-5028, 'output':'local path is not absolute path, local path:%s' % localPath}
+		## localPath whether exists
+		if not util.isLocalPathExists(localPath):
+			logger.error('hostName:%s, local path not exists, local path:%s', self.hostName, localPath)
+			return {'code':-5029, 'output':'local path not exists, local path:%s' % localPath}
+		# local path whether directory
+		tR = ""
+		if sourceIsDir is not None:
+			if sourceIsDir is True:
+				tR = "-r"
+		elif util.isDirOfLocalPath( localPath ):	
+			logger.debug('hostName:%s, local path is a directory, local path:%s', self.hostName, localPath)
+			tR = "-r"
+
+		# scp port
+		tSPort = ""
+		if not None is scpPort:
+			tSPort = "-P %d" % scpPort
+		elif self.port is not None:
+			tSPort = "-P %d" % self.port
+
+		# deal ssh host path
+		tSPath = sshHostPath
+		if not os.path.isabs( sshHostPath ):
+			getAbsPathRet = self.getAbsolutePathFromCurrentRelativePath( sshHostPath )
+			if 0 != getAbsPathRet['code']:
+				return {'code':-5023, 'output':'can not get absolute ssh host path from original relative ssh path:%s, error code:%d, reason:%r' % (sshHostPath, getAbsPathRet['code'], getAbsPathRet['output'])}
+			tSPath = getAbsPathRet['path']
+
+
+		scpPushCommand = "scp %(R)s %(P)s %(localPath)s %(sshUser)s@%(sshHost)s:%(sshHostPath)s" % {
+			'R' : tR,
+			'P' : tSPort,
+			'localPath' : localPath,
+			'sshUser' : self.user,
+			'sshHost' : self.hostName,
+			'sshHostPath' : tSPath,
+		}
+		scpRet = self.execLocalScpCommand(scpCommand=scpPushCommand, scpPassword=self.password, timeout=timeout)
+		if 0 != scpRet['code']:
+			logger.error('hostName:%s, scp from local to self with push failed, command:%s, result:%r', self.hostName, scpPushCommand, scpRet)
+			return {'code':-5030, 'output':'scp from local to self with push failed, reason:%r' % scpRet}
+		else:
+			logger.info('hostName:%s, scp from local to self with push success, command:%s, result:%r', self.hostName, scpPushCommand, scpRet)
+			#update flag when success
+			self.flagScpLocalToSelfWithPush = True
+			return {'code':0, 'output':'scp from local to ssh with push success'}
+
+
+			
+
+	def testScpLocalToSelfWithPush(self, scpPort=None, sourceTempDir='/tmp/', destTempDir='/tmp/', validation=True):
+		if self.flagScpLocalToSelfWithPush is not None:
+			logger.info('hostName:%s, scp local to self with push test already, flag:%r', self.hostName, self.flagScpLocalToSelfWithPush)
+			return self.flagScpLocalToSelfWithPush
+
+		logger.info('hostName:%s, testScpLocalToSelfWithPush starts, sourceTempDir:%s, destTempDir:%s', self.hostName, sourceTempDir, destTempDir)
+	
+		### create source temp file in local host ###
+		createRet = util.createTempFileInLocal()
+		if 0 != createRet['code']:
+			logger.error('hostName:%s, scp local to self with push test failed, can not create source temp file in local host, reason:%r', self.hostName, createRet)
+			# set flag
+			self.flagScpLocalToSelfWithPush = False	
+			return False
+		else:
+			sourceTempFileName = createRet['name']
+			sourceTempFilePath = createRet['path']
+			logger.debug('hostName:%s, create temp file success:%s', self.hostName, sourceTempFilePath)
+	
+		remotePort = ''
+		if scpPort is not None:
+			remotePort = '-P %d' % scpPort
+		elif self.port is not None:
+			remotePort = '-P %d' % self.port
+		
+		scpTestCommand = 'scp %(port)s %(source)s %(user)s@%(hostName)s:%(dest)s' % {'port':remotePort, 'source':sourceTempFilePath, 'user':self.user, 'hostName':self.hostName, 'dest':destTempDir}
+		scpValidationCommand = 'ls -l --color=never %s' % os.path.join(destTempDir, sourceTempFileName)
+
+		scpRet = self.execLocalScpCommand(scpCommand=scpTestCommand, scpPassword=self.password, validation=True, validationInLocal=False, validationCommand=scpValidationCommand, timeout=SCP_TEST_TIMEOUT)
+
+		### delete temp file in local
+		deleteRet = util.deleteFileInLocal( sourceTempFilePath )
+		logger.debug('hostName:%s, delete temp file in local result:%r', self.hostName, deleteRet)
+
+		if 0 != scpRet['code']:
+			logger.error('hostName:%s, scp local to self with push test failed, reason:%s', self.hostName, scpRet['output'])
+			# set flag
+			self.flagScpLocalToSelfWithPush = False	
+			return False
+		else:
+			logger.info("hostName:%s, exec scp local to self with push test command completely, wait to validation", self.hostName)
+
+			if validation is True:
+				if not self.testPathExists( os.path.join(destTempDir, sourceTempFileName) ):
+					logger.error('hostName:%s, exec scp local to self with push test command completely, but can not pass validation', self.hostName)
+					# set flag
+					self.flagScpLocalToSelfWithPush = False	
+					return False
+
+			### delete self temp file
+			deleteRet = self.deleteFile( os.path.join(destTempDir, sourceTempFileName) )
+			logger.debug("hostName:%s, delete temp file in self result:%r", self.hostName, deleteRet)
+			# set flag
+			self.flagScpLocalToSelfWithPush = True
+			return True
+
+
+
+	def scpLocalToSelfWithPull(self,  localPath, sshHostPath, scpPassword=None, sourceIsDir=None, localIntf=None, scpPort=None, timeout=-1):
+		if -1 == timeout: timeout = SCP_WAIT_TIMEOUT
+		if None is localIntf: localIntf = LOCAL_INTERFACE
+
+		# get local user name
+		localUser = util.getLocalUser()
+		if None is localUser:
+			logger.error('hostName:%s, get local user name occurs error', self.hostName)
+			return {'code':-5001, 'output':'get local user name occurs error'}
+
+		# get local ip address
+		localIP = util.getLocalIP( localIntf )
+		if None is localIP:
+			logger.error('hostName:%s, get local ip address occurs error', self.hostName)
+			return {'code':-5003, 'output':'get local ip address occurs error, local interface name:%s' % localIntf}
+
+		# local path, whether absolute path
+		if not os.path.isabs(localPath):
+			logger.error('hostName:%s, local path [%s] should be absolute path', self.hostName, localPath)
+			return {'code': -5004, 'output':'localPath should be absolute path'}
+		# local path whether exists
+		if not util.isLocalPathExists( localPath ):
+			logger.error('hostName:%s, local path not exists, local path:%s', self.hostName, localPath)
+			return {'code':-5029, 'output':'local path not exists, local path:%s' % localPath}
+		# local path whether directory
+		tR = ""
+		if sourceIsDir is not None:
+			if sourceIsDir is True:
+				tR = "-r"
+		elif util.isDirOfLocalPath( localPath ):	
+			logger.debug('hostName:%s, local path is a directory, local path:%s', self.hostName, localPath)
+			tR = "-r"
+
+		# scpPort
+		tLPort = ""
+		if not None is scpPort:
+			tLPort = "-P %d" % scpPort
+
+		scpPullCommand = "scp %(R)s %(P)s %(localUser)s@%(localIP)s:%(localPath)s %(sshHostPath)s" % {
+			'R' : tR,
+			'P' : tLPort,
+			'localUser' : localUser,
+			'localIP' : localIP,
+			'localPath' : localPath,
+			'sshHostPath' : sshHostPath,
+		}
+		scpRet = self.execScpCommand(scpPullCommand, scpPassword, timeout)
+		if 0 != scpRet['code']:
+			logger.error('hostName:%s, scp local to self with pull failed, command:%s, result:%r', self.hostName, scpPullCommand, scpRet)
+			return {'code':-5018, 'output':'scp local to self with pull failed, error code:%d, reason:%r' % (scpRet['code'], scpRet['output'])}
+		else:
+			logger.info('hostName:%s, scp local to self with pull success, command:%s, result:%r', self.hostName, scpPullCommand, scpRet)
+			### update flag when success
+			self.flagScpLocalToSelfWithPull = True
+			return {'code':0, 'output':'scp from local to ssh with pull success'}
+
+
+	def testScpLocalToSelfWithPull(self, scpPassword=None, localIntf=None, scpPort=None, sourceTempDir='/tmp', destTempDir='/tmp', validation=True):
+		if self.flagScpLocalToSelfWithPull is not None:
+			logger.debug('hostName:%s, scp local to self with pull test already, flag:%r', self.hostName, self.flagScpLocalToSelfWithPull)
+			return self.flagScpLocalToSelfWithPull
+
+		# deal parameters
+		if None is localIntf: localIntf = LOCAL_INTERFACE
+
+		logger.info("hostName:%s, scp local to self with pull test starts, localIntf:%s, scpPort:%r, sourceTempDir:%s, destTempDir:%s, validation:%r", self.hostName, localIntf, scpPort, sourceTempDir, destTempDir, validation)
+
+		# get local user name
+		localUser = util.getLocalUser()
+		if None is localUser:
+			logger.error('hostName:%s, get local user name occurs error', self.hostName)
+			## update flag
+			self.flagScpLocalToSelfWithPull = False
+			return False
+
+		# get local ip address
+		localIP = util.getLocalIP( localIntf )
+		if None is localIP:
+			logger.error('hostName:%s, get local ip address occurs error', self.hostName)
+			## update flag
+			self.flagScpLocalToSelfWithPull = False
+			return False
+
+		# scpPort
+		tLPort = ""
+		if not None is scpPort:
+			tLPort = "-P %d" % scpPort
+
+		### create source temp file in local host ###
+		createRet = util.createTempFileInLocal(sourceTempDir)
+		if 0 != createRet['code']:
+			logger.error('hostName:%s, scp local to self with push test failed, can not create source temp file in local host, reason:%r', self.hostName, createRet)
+			## update flag
+			self.flagScpLocalToSelfWithPull = False
+			return False
+		else:
+			sourceTempFileName = createRet['name']
+			sourceTempFilePath = createRet['path']
+			logger.debug('hostName:%s, create temp file success:%s', self.hostName, sourceTempFilePath)
+
+		scpPullCommand = "scp %(P)s %(localUser)s@%(localIP)s:%(localPath)s %(sshHostPath)s" % {
+			'P' : tLPort,
+			'localUser' : localUser,
+			'localIP' : localIP,
+			'localPath' : sourceTempFilePath,
+			'sshHostPath' : destTempDir,
+		}
+
+		scpRet = self.execScpCommand(scpCommand=scpPullCommand, scpPassword=scpPassword, timeout=SCP_TEST_TIMEOUT)
+
+		### delete temp file in local
+		deleteRet = util.deleteFileInLocal( sourceTempFilePath )
+		logger.debug('hostName:%s, delete temp file in local result:%r', self.hostName, deleteRet)
+
+		if 0 == scpRet['code']:
+			logger.debug('hostName:%s, exec scp test command completely, wait to validation', self.hostName)
+
+			if True is validation:
+				if not self.testPathExists( os.path.join(destTempDir, sourceTempFileName) ):
+					logger.error('hostName:%s, exec scp test command completely, but can not pass validation', self.hostName) 
+					## update flag
+					self.flagScpLocalToSelfWithPull = False
+					return False
+			
+			## delete temp file in self
+			deleteRet = self.deleteFile( os.path.join(destTempDir, sourceTempFileName) )
+			logger.debug('hostName:%s, delete temp file in self, result:%r', self.hostName, deleteRet)
+
+			### update flag
+			self.flagScpLocalToSelfWithPull = True
+			return True
+		else:
+			logger.error('hostName:%s, scp local to self with pull test failed', self.hostName)
+
+			## update flag
+			self.flagScpLocalToSelfWithPull = False
+			return False
+
+
+
+	def scpSelfToLocalWithPush(self, sshHostPath, localPath, scpPassword=None, scpPort=None, localIntf=None, timeout=-1, sourceIsDir=None):
+		if None is localIntf: localIntf = LOCAL_INTERFACE
+		if -1 == timeout: timeout = SCP_WAIT_TIMEOUT
+
+		if not os.path.isabs(localPath):
+			return {'code':-5024, 'output':'local path is not absolute, local path:%s' % localPath}
+
+		# get local ip address
+		localIP = util.getLocalIP( localIntf )
+		if None is localIP:
+			return {'code':-5002, 'output':'can not get local ip address'}
+
+		# get local user name
+		localUser = util.getLocalUser()
+		if None is localUser:
+			return {'code':-5001, 'output':'get local user name occurs exception'}
+
+		# test sshHostPath exists
+		if not self.testPathExists( sshHostPath ):
+			return {'code':-5025, 'output':'scp source path not exists:%s' % sshHostPath}
+		# test sshHostPath whether dir or not
+		tDir = ''
+		if sourceIsDir is None:
+			if self.isDirPath( sshHostPath ):
+				tDir = '-r'
+		elif sourceIsDir is True:
+			tDir = '-r'
+		
+
+		tPort = ''
+		if None is not scpPort: tPort = '-P %d' % scpPort
+
+		scpCommand = "scp %(R)s %(P)s %(sshHostPath)s %(localUser)s@%(localIP)s:%(localPath)s" % {
+			'R' : tDir,
+			'P' : tPort,
+			'sshHostPath' : sshHostPath,
+			'localUser' : localUser,
+			'localIP' : localIP,
+			'localPath' : localPath,
+		}
+		
+		resultRet = self.execScpCommand(scpCommand=scpCommand, scpPassword=scpPassword, timeout=timeout)
+		#### if success update flag
+		if 0 == resultRet['code']:
+			self.flagScpSelfToLocalWithPush = True
+			return resultRet
+		else:
+			logger.error('hostName:%s, scp from self to local with push error, reason:%r', self.hostName, resultRet)
+			return {'code':-5027, 'output':'scp from self to local with push error, reason:%r' % resultRet}
+
+
+
+	def testScpSelfToLocalWithPush(self, scpPassword=None, scpPort=None, localIntf=None, sshHostTempDir='/tmp', localTempDir='/tmp', validation=True):
+		### 若已经判断过，则直接返回相应结果
+		if self.flagScpSelfToLocalWithPush is not None:
+			logger.dubug('hostName:%s, have been tested, flagScpSelfToLocalWithPush:%r', self.hostName, self.flagScpSelfToLocalWithPush)
+			return self.flagScpSelfToLocalWithPush
+
+		if None is localIntf: localIntf = LOCAL_INTERFACE
+
+		#create temp file in self
+		createRet = self.createTempFile(tempDir=sshHostTempDir)
+		if 0 != createRet['code']:
+			logger.error('hostName:%s, scp from self to local with push test failed, can not create temp file in ssh host', self.hostName)
+			self.flagScpSelfToLocalWithPush = False
+			return False
+		sshHostTempFilePath = createRet['path']
+		sshHostTempFileName = createRet['name']
+
+		scpRet = self.scpSelfToLocalWithPush(sshHostPath=sshHostTempFilePath, localPath=localTempDir, scpPassword=scpPassword, scpPort=scpPort, localIntf=localIntf, timeout=SCP_TEST_TIMEOUT, sourceIsDir=False)
+
+		## delete temp file in self
+		deleteRet = self.deleteFile(sshHostTempFilePath)
+		if 0 != deleteRet['code']:
+			logger.error('hostName:%s, delete temp file error, file:%s, reason:%r', self.hostName, sshHostTempFilePath, deleteRet)
+		else:
+			logger.debug('hostName:%s, delete temp file success, file:%s', self.hostName, sshHostTempFilePath)
+
+		if 0 != scpRet['code']:
+			logger.error('hostName:%s, scp from ssh to local with push test failed, reason:%r', self.hostName, scpRet)
+			self.flagScpSelfToLocalWithPush = False
+			return False
+
+		localDestTempFilePath = os.path.join(localTempDir, sshHostTempFileName)
+
+		if True is validation:
+			if not util.isLocalPathExists( localDestTempFilePath ):
+				logger.error('hostName:%s, scp from self to local with push test failed, can not pass validation', self.hostName)
+				self.flagScpSelfToLocalWithPush = False
+				return False
+			logger.debug('hostName:%s, scp from self to local with push test pass validation, local temp path:%s', self.hostName, localDestTempFilePath)
+
+		### delete temp file in local
+		tDR = util.deleteFileInLocal( localDestTempFilePath )
+		if not tDR:
+			logger.error('hostName:%s, scp from self to local with push test, delete temp file in local error, local temp path:%s', self.hostName, localDestTempFilePath)
+
+		self.flagScpSelfToLocalWithPush = True
+		return True
+
+
+
+	def scpSelfToLocalWithPull(self, sshHostPath, localPath, scpPort=None, timeout=-1, sourceIsDir=None):
+		if -1 == timeout: timeout = SCP_WAIT_TIMEOUT
+
+		if not os.path.isabs(localPath):
+			return {'code':-5024, 'output':'local path is not absolute, local path:%s' % localPath}
+
+		# test sshHostPath exists
+		if not self.testPathExists( sshHostPath ):
+			return {'code':-5025, 'output':'scp source path not exists:%s' % sshHostPath}
+		# test sshHostPath whether dir or not
+		tDir = ''
+		if sourceIsDir is None:
+			if self.isDirPath( sshHostPath ):
+				tDir = '-r'
+		elif sourceIsDir is True:
+			tDir = '-r'
+		# deal ssh host path
+		tSPath = sshHostPath
+		if not os.path.isabs( sshHostPath ):
+			getAbsPathRet = self.getAbsolutePathFromCurrentRelativePath( sshHostPath )
+			if 0 != getAbsPathRet['code']:
+				return {'code':-5023, 'output':'can not get absolute ssh host path from original relative ssh path:%s, error code:%d, reason:%r' % (sshHostPath, getAbsPathRet['code'], getAbsPathRet['output'])}
+			tSPath = getAbsPathRet['path']
+
+		tPort = ''
+		if None is not scpPort: tPort = '-P %d' % scpPort
+		elif self.port is not None: tPort = '-P %d' % self.port
+
+		scpCommand = "scp %(R)s %(P)s %(sshUser)s@%(sshHostName)s:%(sshHostPath)s %(localPath)s" % {
+			'R' : tDir,
+			'P' : tPort,
+			'sshUser' : self.user,
+			'sshHostName' : self.hostName,
+			'sshHostPath' : tSPath,
+			'localPath' : localPath,
+		}
+
+		scpRet = self.execLocalScpCommand(scpCommand=scpCommand, scpPassword=self.password, timeout=timeout)
+
+		if 0 != scpRet['code']:
+			logger.error('hostName:%s, scp from self to local with pull error, reason:%r', self.hostName, scpRet)
+			return {'code':-5026, 'output':'scp from self to local with pull error, reason:%r' % scpRet}
+		else:
+			#### update flag if success
+			self.flagScpSelfToLocalWithPull = True
+			return {'code':0, 'output':scpRet['output']}
+
+
+	def testScpSelfToLocalWithPull(self, sshHostTempDir='/tmp', localTempDir='/tmp', scpPort=None, validation=True):
+		### 若已经判断过，则直接返回相应结果
+		if self.flagScpSelfToLocalWithPull is not None:
+			logger.dubug('hostName:%s, have been tested, flagScpSelfToLocalWithPull:%r', self.hostName, self.flagScpSelfToLocalWithPull)
+			return self.flagScpSelfToLocalWithPull
+
+		#create temp file in self
+		createRet = self.createTempFile(tempDir=sshHostTempDir)
+		if 0 != createRet['code']:
+			logger.error('hostName:%s, scp from self to local with pull test failed, can not create temp file in ssh host', self.hostName)
+			self.flagScpSelfToLocalWithPull = False
+			return False
+		sshHostTempFilePath = createRet['path']
+		sshHostTempFileName = createRet['name']
+
+		scpRet = self.scpSelfToLocalWithPull(sshHostPath=sshHostTempFilePath, localPath=localTempDir, scpPort=scpPort, timeout=SCP_TEST_TIMEOUT, sourceIsDir=False)
+
+		## delete temp file in self
+		deleteRet = self.deleteFile(sshHostTempFilePath)
+		if 0 != deleteRet['code']:
+			logger.error('hostName:%s, delete temp file error, file:%s, reason:%r', self.hostName, sshHostTempFilePath, deleteRet)
+		else:
+			logger.debug('hostName:%s, delete temp file success, file:%s', self.hostName, sshHostTempFilePath)
+
+		if 0 != scpRet['code']:
+			logger.error('hostName:%s, scp from self to local with pull test failed, scp error, reason:%r', self.hostName, scpRet)
+			self.flagScpSelfToLocalWithPull = False
+			return False
+		
+		localDestTempFilePath = os.path.join(localTempDir, sshHostTempFileName)
+
+		if True is validation:
+			if not util.isLocalPathExists( localDestTempFilePath ):
+				logger.error('hostName:%s, scp from self to local with push test failed, can not pass validation', self.hostName)
+				self.flagScpSelfToLocalWithPull = False
+				return False
+			logger.debug('hostName:%s, scp from self to local with push test pass validation, local temp path:%s', self.hostName, localDestTempFilePath)
+
+		### delete temp file in local
+		tDR = util.deleteFileInLocal( localDestTempFilePath )
+		if not tDR:
+			logger.error('hostName:%s, scp from self to local with push test, delete temp file in local error, local temp path:%s', self.hostName, localDestTempFilePath)
+
+		self.flagScpSelfToLocalWithPull = True
+		return True
+
+	
+	def scpLocalToSelfPullPush(self,  localPath, sshHostPath, localPassword=None, sourceIsDir=None, localIntf=None, localPort=None, timeout=-1):
+		#### pull 
+		if self.flagScpLocalToSelfWithPull is None:
+			self.testScpLocalToSelfWithPull(scpPassword=localPassword, localIntf=localIntf, scpPort=localPort)
+		if self.flagScpLocalToSelfWithPull is True:
+			pullRet = self.scpLocalToSelfWithPull(localPath=localPath, sshHostPath=sshHostPath, scpPassword=localPassword, sourceIsDir=sourceIsDir, localIntf=localIntf, scpPort=localPort, timeout=timeout)
+			if 0 == pullRet['code']:
+				return pullRet
+			else:
+				logger.error('hostName:%s, scp local to self with pull failed, reason:%r, then try with push', self.hostName, pullRet)
+
+		### push
+		if self.flagScpLocalToSelfWithPush is None:
+			self.testScpLocalToSelfWithPush(scpPort=self.port)
+		if self.flagScpLocalToSelfWithPush is True:
+			pushRet = self.scpLocalToSelfWithPush(localPath=localPath, sshHostPath=sshHostPath, scpPort=self.port, timeout=timeout, sourceIsDir=sourceIsDir)
+			if 0 == pushRet['code']:
+				return pushRet
+			else:
+				logger.error('hostName:%s, scp local to self pull_push, both direction failed', self.hostName)
+				return {'code':-5017, 'output':'both direction failed'}
+		else:
+			logger.error('hostName:%s, scp local to self pull_push, both direction failed', self.hostName)
+			return {'code':-5017, 'output':'both direction failed'}
+
+
+	def scpLocalToSelfPushPull(self,  localPath, sshHostPath, localPassword=None, sourceIsDir=None, localIntf=None, localPort=None, timeout=-1):
+		### push
+		if self.flagScpLocalToSelfWithPush is None:
+			self.testScpLocalToSelfWithPush(scpPort=self.port)
+		if self.flagScpLocalToSelfWithPush is True:
+			pushRet = self.scpLocalToSelfWithPush(localPath=localPath, sshHostPath=sshHostPath, scpPort=self.port, timeout=timeout, sourceIsDir=sourceIsDir)
+			if 0 == pushRet['code']:
+				return pushRet
+			else:
+				logger.error('hostName:%s, scp local to self with push failed, reason:%r, then try with pull', self.hostName, pushRet)
+
+		#### pull 
+		if self.flagScpLocalToSelfWithPull is None:
+			self.testScpLocalToSelfWithPull(scpPassword=localPassword, localIntf=localIntf, scpPort=localPort)
+		if self.flagScpLocalToSelfWithPull is True:
+			pullRet = self.scpLocalToSelfWithPull(localPath=localPath, sshHostPath=sshHostPath, scpPassword=localPassword, sourceIsDir=sourceIsDir, localIntf=localIntf, scpPort=localPort, timeout=timeout)
+			if 0 == pullRet['code']:
+				return pullRet
+			else:
+				logger.error('hostName:%s, scp local to self push_pull, both direction failed', self.hostName)
+				return {'code':-5021, 'output':'both direction failed'}
+		else:
+			logger.error('hostName:%s, scp local to self push_pull, both direction failed', self.hostName)
+			return {'code':-5021, 'output':'both direction failed'}
+
+
+
+	def scpSelfToLocalPullPush(self, localPath, sshHostPath, localPassword=None, sourceIsDir=None, localIntf=None, localPort=None, timeout=-1):
+		### pull
+		if self.flagScpSelfToLocalWithPull is None:
+			self.testScpSelfToLocalWithPull(scpPort=self.port)
+		if self.flagScpSelfToLocalWithPull is True:
+			pullRet = self.scpSelfToLocalWithPull(sshHostPath=sshHostPath, localPath=localPath, scpPort=self.port, timeout=timeout, sourceIsDir=sourceIsDir)
+			if 0 == pullRet['code']:
+				return {'code':0, 'output':'scp from ssh to local with pull success'}
+			else:
+				logger.error('hostName:%s, scp self to local with pull failed, reason:%r, then try with push', self.hostName, pullRet)
+
+		### push
+		if self.flagScpSelfToLocalWithPush is None:
+			self.testScpSelfToLocalWithPush(scpPassword=localPassword, scpPort=localPort, localIntf=localIntf)
+		if self.flagScpSelfToLocalWithPush is True:
+			pushRet = self.scpSelfToLocalWithPush(sshHostPath=sshHostPath, localPath=localPath, scpPassword=localPassword, scpPort=localPort, localIntf=localIntf, timeout=timeout, sourceIsDir=sourceIsDir) 
+			if 0 == pushRet['code']:
+				return {'code':0, 'output':'scp from ssh to local with push success'}
+			else:
+				logger.error('hostName:%s, scp self to local pull_push, both direction failed', self.hostName)
+				return {'code':-5031, 'output':'both direction failed'}
+		else:
+			logger.error('hostName:%s, scp self to local pull_push, both direction failed', self.hostName)
+			return {'code':-5031, 'output':'both direction failed'}
+
+
+	def scpSelfToLocalPushPull(self, localPath, sshHostPath, localPassword=None, sourceIsDir=None, localIntf=None, localPort=None, timeout=-1):
+		### push
+		if self.flagScpSelfToLocalWithPush is None:
+			self.testScpSelfToLocalWithPush(scpPassword=localPassword, scpPort=localPort, localIntf=localIntf)
+		if self.flagScpSelfToLocalWithPush is True:
+			pushRet = self.scpSelfToLocalWithPush(sshHostPath=sshHostPath, localPath=localPath, scpPassword=localPassword, scpPort=localPort, localIntf=localIntf, timeout=timeout, sourceIsDir=sourceIsDir) 
+			if 0 == pushRet['code']:
+				return {'code':0, 'output':'scp from ssh to local with push success'}
+			else:
+				logger.error('hostName:%s, scp self to local with push failed, reason:%r, then try with pull', self.hostName, pushRet)
+		
+		### pull
+		if self.flagScpSelfToLocalWithPull is None:
+			self.testScpSelfToLocalWithPull(scpPort=self.port)
+		if self.flagScpSelfToLocalWithPull is True:
+			pullRet = self.scpSelfToLocalWithPull(sshHostPath=sshHostPath, localPath=localPath, scpPort=self.port, timeout=timeout, sourceIsDir=sourceIsDir)
+			if 0 == pullRet['code']:
+				return {'code':0, 'output':'scp from ssh to local with pull success'}
+			else:
+				logger.error('hostName:%s, scp self to local push_pull, both direction failed', self.hostName)
+				return {'code':-5032, 'output':'both direction failed'}
+		else:
+			logger.error('hostName:%s, scp self to local push_pull, both direction failed', self.hostName)
+			return {'code':-5032, 'output':'both direction failed'}
+
 
 
 

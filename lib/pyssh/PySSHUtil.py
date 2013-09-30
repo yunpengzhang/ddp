@@ -112,17 +112,30 @@ logger.info('LOCAL_INTERFACE:%r', LOCAL_INTERFACE)
 
 ######################################################################################################################
 def pexpectClearOutputBuffer(child):
-	time.sleep(0.05)
+	time.sleep(0.5)
 	try:
-		#child.read_nonblocking(size=10000, timeout=1) # GAS: Clear out the cache
-		child.before = ""
-		child.after = ""
-		child.buffer = ""
+		child.read_nonblocking(size=10000, timeout=1) # GAS: Clear out the cache
 	except pexpect.TIMEOUT:
-		logger.error("pexpectClearOutputBuffer read_nonblocking timeout, go on doing following stepts")
-		child.before = ""
-		child.after = ""
-		child.buffer = ""
+		logger.debug("pexpectClearOutputBuffer read_nonblocking timeout, go on doing following stepts")
+	#child.before = ""
+	#child.after = ""
+	#child.buffer = ""
+
+
+def pexpectCloseSpawn(child):
+	try:
+		child.sendline("exit")
+		index = child.expect([pexpect.EOF, "(?i)there are stopped jobs"])
+		if index==1:
+		    child.sendline("exit")
+		    #self.expect(EOF)
+		child.close(force=True)
+	except:
+		logger.exception("pexpectCloseSpawn occurs exception when closing spawn")
+
+
+
+
 
 
 

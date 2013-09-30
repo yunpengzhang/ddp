@@ -121,54 +121,43 @@ def p_cmd(p):
 	elif 4 == len(p):
 		p[0] = CmdNode(category='cmd', command=p[3], lineno=p.lineno(2), child=None, adjs=p[1])
 
-
-
-def p_cmd_scp_local_push_pull(p):
-	'''cmd : adjs SEP SCP_LOCAL_PUSH_PULL SEP scp_adjs
-		   | SCP_LOCAL_PUSH_PULL SEP scp_adjs'''
-	if 4 == len(p):
-		p[0] = CmdNode(category='cmd', command='pyssh_scp_local_push_pull', lineno=p.lineno(2), child=None, adjs=p[3])
-	elif 6 == len(p):
-		p[0] = CmdNode(category='cmd', command='pyssh_scp_local_push_pull', lineno=p.lineno(2), child=None, adjs=dict(p[1], **(p[5])))
-	tNotNeedKeys = ['LOCAL_USER', 'SCP_PWD',]
-	for k in tNotNeedKeys:
-		if k in p[0].adjs:
-			raise Exception('%s should not be used in SCP_LOCAL_PUSH_PULL in lineno:%d' % (k, p.lineno(2)))
-	tNeedKeys = ['LOCAL_PATH', 'SSH_HOST_PATH']	
-	for k in tNeedKeys:
-		if not k in p[0].adjs:
-			raise Exception('%s must be used in SCP_LOCAL_PUSH_PULL in lineno:%d' % (k, p.lineno(2)))
-	if not 'LOCAL_ISDIR' in p[0].adjs:
-		p[0].adjs['LOCAL_ISDIR'] = False
-	if not 'LOCAL_PORT' in p[0].adjs:
-		p[0].adjs['LOCAL_PORT'] = None
-	if not 'LOCAL_PWD' in p[0].adjs:
-		p[0].adjs['LOCAL_PWD'] = None
+	
 
 
 
 
-def p_cmd_scp_local_pull_push(p):
-	'''cmd : adjs SEP SCP_LOCAL_PULL_PUSH SEP scp_adjs
-		   | SCP_LOCAL_PULL_PUSH SEP scp_adjs'''
-	if 4 == len(p):
-		p[0] = CmdNode(category='cmd', command='pyssh_scp_local_pull_push', lineno=p.lineno(2), child=None, adjs=p[3])
-	elif 6 == len(p):
-		p[0] = CmdNode(category='cmd', command='pyssh_scp_local_pull_push', lineno=p.lineno(2), child=None, adjs=dict(p[1], **(p[5])))
-	tNotNeedKeys = ['LOCAL_USER', 'SCP_PWD',]
-	for k in tNotNeedKeys:
-		if k in p[0].adjs:
-			raise Exception('%s should not be used in SCP_LOCAL_PULL_PUSH in lineno:%d' % (k, p.lineno(2)))
-	tNeedKeys = ['LOCAL_PATH', 'SSH_HOST_PATH']	
-	for k in tNeedKeys:
-		if not k in p[0].adjs:
-			raise Exception('%s must be used in SCP_LOCAL_PULL_PUSH in lineno:%d' % (k, p.lineno(2)))
-	if not 'LOCAL_ISDIR' in p[0].adjs:
-		p[0].adjs['LOCAL_ISDIR'] = False
-	if not 'LOCAL_PORT' in p[0].adjs:
-		p[0].adjs['LOCAL_PORT'] = None
-	if not 'LOCAL_PWD' in p[0].adjs:
-		p[0].adjs['LOCAL_PWD'] = None
+
+
+def p_scp_adjunct(p):
+	'''scp_adjunct : LOCAL_INTF SEP STRING
+				  | LOCAL_PORT SEP INTEGER
+				  | LOCAL_USER SEP STRING
+				  | LOCAL_PASSWD SEP STRING
+				  | LOCAL_PATH SEP STRING
+				  | SSH_HOST_PATH SEP STRING
+				  | SOURCE_IS_DIR'''
+	if 2 == len(p) and 'SOURCE_IS_DIR' == p[1]:
+		p[0] = {'SOURCE_IS_DIR' : True }
+	elif 4 == len(p) and 'LOCAL_INTF' == p[1]:
+		p[0] = { 'LOCAL_INTF' : p[3].strip() }
+	elif 4 == len(p) and 'LOCAL_PORT' == p[1]:
+		p[0] = { 'LOCAL_PORT' : p[3] }
+	elif 4 == len(p) and 'LOCAL_USER' == p[1]:
+		p[0] = { 'LOCAL_USER' : p[3].strip() }
+	elif 4 == len(p) and 'LOCAL_PASSWD' == p[1]:
+		p[0] = { 'LOCAL_PASSWD' : p[3] }
+	elif 4 == len(p) and 'LOCAL_PATH' == p[1]:
+		p[0] = { 'LOCAL_PATH' : p[3].strip() }
+	elif 4 == len(p) and 'SSH_HOST_PATH' == p[1]:
+		p[0] = { 'SSH_HOST_PATH' : p[3].strip() }
+	# port
+	if 'LOCAL_PORT' in p[0] and (0 > p[0]['LOCAL_PORT'] or 65535 < p[0]['LOCAL_PORT']):
+		raise Exception('LOCAL_PORT not proper in lineno:%d' % p.lineno(2))
+	# should not empty
+	notEmptyItems = ['LOCAL_INTF', 'LOCAL_USER', 'LOCAL_PATH', 'SSH_HOST_PATH', ]
+	for item in notEmptyItems:
+		if item in p[0] and not p[0][item]:
+			raise Exception('%s can not be empty in lineno:%d' % (item, p.lineno(2)))
 
 
 def p_scp_adjs(p):
@@ -178,40 +167,102 @@ def p_scp_adjs(p):
 		p[0] = p[1]
 	elif 4 == len(p):
 		for k in p[3].keys():
-			if 0 != cmp('lineno', k) and k in p[1]:
+			if k in p[1]:
 				raise Exception('%s used duplicately in lineno:%d' % (k, p.lineno(2)))
 		p[0] = dict(p[1], **(p[3]))
 
-def p_scp_adjunct(p):
-	'''scp_adjunct : LOCAL_INTF SEP STRING
-				  | LOCAL_PORT SEP INTEGER
-				  | LOCAL_USER SEP STRING
-				  | LOCAL_PWD SEP STRING
-				  | LOCAL_PATH SEP STRING
-				  | SSH_HOST_PATH SEP STRING
-				  | LOCAL_ISDIR'''
-	if 2 == len(p) and 'LOCAL_ISDIR' == p[1]:
-		p[0] = {'LOCAL_ISDIR' : True }
-	elif 4 == len(p) and 'LOCAL_INTF' == p[1]:
-		p[0] = { 'LOCAL_INTF' : p[3].strip() }
-	elif 4 == len(p) and 'LOCAL_PORT' == p[1]:
-		p[0] = { 'LOCAL_PORT' : p[3] }
-	elif 4 == len(p) and 'LOCAL_USER' == p[1]:
-		p[0] = { 'LOCAL_USER' : p[3].strip() }
-	elif 4 == len(p) and 'LOCAL_PWD' == p[1]:
-		p[0] = { 'LOCAL_PWD' : p[3] }
-	elif 4 == len(p) and 'LOCAL_PATH' == p[1]:
-		p[0] = { 'LOCAL_PATH' : p[3].strip() }
-	elif 4 == len(p) and 'SSH_HOST_PATH' == p[1]:
-		p[0] = { 'SSH_HOST_PATH' : p[3].strip() }
-	# port
-	if 'LOCAL_PORT' in p[0] and (0 > p[0]['LOCAL_PORT'] or 65535 < p[0]['LOCAL_PORT']):
-		raise Exception('LOCAL_PORT not proper in lineno:%d' % p.lineno(2))
-	# should not empty
-	notEmptyItems = ['LOCAL_INTF', 'LOCAL_USER', 'LOCAL_PATH', 'SSH_HOST_PATH']
-	for item in notEmptyItems:
-		if item in p[0] and not p[0][item]:
-			raise Exception('%s can not be empty in lineno:%d' % (item, p.lineno(2)))
+
+def p_cmd_scp_local_to_ssh_pull_push(p):
+	'''cmd : adjs SEP SCP_LOCAL_TO_SSH_PULL_PUSH SEP scp_adjs
+		   | SCP_LOCAL_TO_SSH_PULL_PUSH SEP scp_adjs'''
+	if 4 == len(p):
+		p[0] = CmdNode(category='cmd', command='pyssh_scp_local_to_ssh_pull_push', lineno=p.lineno(2), child=None, adjs=p[3])
+	elif 6 == len(p):
+		p[0] = CmdNode(category='cmd', command='pyssh_scp_local_to_ssh_pull_push', lineno=p.lineno(2), child=None, adjs=dict(p[1], **(p[5])))
+	tNotNeedKeys = ['LOCAL_CMD', 'LOCAL_USER', 'SCP_PASSWD',]
+	for k in tNotNeedKeys:
+		if k in p[0].adjs:
+			raise Exception('%s should not be used in SCP_LOCAL_TO_SSH_PULL_PUSH in lineno:%d' % (k, p.lineno(2)))
+	tNeedKeys = ['LOCAL_PATH', 'SSH_HOST_PATH']	
+	for k in tNeedKeys:
+		if not k in p[0].adjs:
+			raise Exception('%s must be used in SCP_LOCAL_TO_SSH_PULL_PUSH in lineno:%d' % (k, p.lineno(2)))
+	tDefaultNoneKeys = ['SOURCE_IS_DIR', 'LOCAL_PORT', 'LOCAL_PASSWD', 'LOCAL_INTF',]
+	for k in tDefaultNoneKeys:
+		if not k in p[0].adjs:
+			p[0].adjs[ k ] = None
+
+
+def p_cmd_scp_local_to_ssh_push_pull(p):
+	'''cmd : adjs SEP SCP_LOCAL_TO_SSH_PUSH_PULL SEP scp_adjs
+		   | adjs SEP SCP_LOCAL_TO_SSH SEP scp_adjs
+		   | SCP_LOCAL_TO_SSH_PUSH_PULL SEP scp_adjs
+		   | SCP_LOCAL_TO_SSH SEP scp_adjs'''
+	if 4 == len(p):
+		p[0] = CmdNode(category='cmd', command='pyssh_scp_local_to_ssh_push_pull', lineno=p.lineno(2), child=None, adjs=p[3])
+	elif 6 == len(p):
+		p[0] = CmdNode(category='cmd', command='pyssh_scp_local_to_ssh_push_pull', lineno=p.lineno(2), child=None, adjs=dict(p[1], **(p[5])))
+	tNotNeedKeys = ['LOCAL_CMD', 'LOCAL_USER', 'SCP_PASSWD',]
+	for k in tNotNeedKeys:
+		if k in p[0].adjs:
+			raise Exception('%s should not be used in SCP_LOCAL_TO_SSH or SCP_LOCAL_TO_SSH_PUSH_PULL in lineno:%d' % (k, p.lineno(2)))
+	tNeedKeys = ['LOCAL_PATH', 'SSH_HOST_PATH']	
+	for k in tNeedKeys:
+		if not k in p[0].adjs:
+			raise Exception('%s must be used in SCP_LOCAL_TO_SSH or SCP_LOCAL_TO_SSH_PUSH_PULL in lineno:%d' % (k, p.lineno(2)))
+	tDefaultNoneKeys = ['SOURCE_IS_DIR', 'LOCAL_PORT', 'LOCAL_PASSWD', 'LOCAL_INTF',]
+	for k in tDefaultNoneKeys:
+		if not k in p[0].adjs:
+			p[0].adjs[ k ] = None
+
+
+def p_cmd_scp_ssh_to_local_pull_push(p):
+	'''cmd : adjs SEP SCP_SSH_TO_LOCAL_PULL_PUSH SEP scp_adjs
+		   | adjs SEP SCP_SSH_TO_LOCAL SEP scp_adjs
+		   | SCP_SSH_TO_LOCAL_PULL_PUSH SEP scp_adjs
+		   | SCP_SSH_TO_LOCAL SEP scp_adjs'''
+	if 4 == len(p):
+		p[0] = CmdNode(category='cmd', command='pyssh_scp_ssh_to_local_pull_push', lineno=p.lineno(2), child=None, adjs=p[3])
+	elif 6 == len(p):
+		p[0] = CmdNode(category='cmd', command='pyssh_scp_ssh_to_local_pull_push', lineno=p.lineno(2), child=None, adjs=dict(p[1], **(p[5])))
+	tNotNeedKeys = ['LOCAL_CMD', 'LOCAL_USER', 'SCP_PASSWD',]
+	for k in tNotNeedKeys:
+		if k in p[0].adjs:
+			raise Exception('%s should not be used in SCP_SSH_TO_LOCAL or SCP_SSH_TO_LOCAL_PULL_PUSH in lineno:%d' % (k, p.lineno(2)))
+	tNeedKeys = ['LOCAL_PATH', 'SSH_HOST_PATH']	
+	for k in tNeedKeys:
+		if not k in p[0].adjs:
+			raise Exception('%s must be used in SCP_SSH_TO_LOCAL or SCP_SSH_TO_LOCAL_PULL_PUSH in lineno:%d' % (k, p.lineno(2)))
+	tDefaultNoneKeys = ['SOURCE_IS_DIR', 'LOCAL_PORT', 'LOCAL_PASSWD', 'LOCAL_INTF',]
+	for k in tDefaultNoneKeys:
+		if not k in p[0].adjs:
+			p[0].adjs[ k ] = None
+
+
+def p_cmd_scp_ssh_to_local_push_pull(p):
+	'''cmd : adjs SEP SCP_SSH_TO_LOCAL_PUSH_PULL SEP scp_adjs
+		   | SCP_SSH_TO_LOCAL_PUSH_PULL SEP scp_adjs'''
+	if 4 == len(p):
+		p[0] = CmdNode(category='cmd', command='pyssh_scp_ssh_to_local_push_pull', lineno=p.lineno(2), child=None, adjs=p[3])
+	elif 6 == len(p):
+		p[0] = CmdNode(category='cmd', command='pyssh_scp_ssh_to_local_push_pull', lineno=p.lineno(2), child=None, adjs=dict(p[1], **(p[5])))
+	tNotNeedKeys = ['LOCAL_CMD', 'LOCAL_USER', 'SCP_PASSWD',]
+	for k in tNotNeedKeys:
+		if k in p[0].adjs:
+			raise Exception('%s should not be used in SCP_SSH_TO_LOCAL_PUSH_PULL in lineno:%d' % (k, p.lineno(2)))
+	tNeedKeys = ['LOCAL_PATH', 'SSH_HOST_PATH']	
+	for k in tNeedKeys:
+		if not k in p[0].adjs:
+			raise Exception('%s must be used in SCP_SSH_TO_LOCAL_PUSH_PULL in lineno:%d' % (k, p.lineno(2)))
+	tDefaultNoneKeys = ['SOURCE_IS_DIR', 'LOCAL_PORT', 'LOCAL_PASSWD', 'LOCAL_INTF',]
+	for k in tDefaultNoneKeys:
+		if not k in p[0].adjs:
+			p[0].adjs[ k ] = None
+
+
+
+
+
 
 def p_cmd_add_user(p):
 	'''cmd : ADD_USER SEP add_user_adjs
@@ -220,7 +271,7 @@ def p_cmd_add_user(p):
 		p[0] = CmdNode(category='cmd', command='pyssh_add_user', lineno=p.lineno(2), child=None, adjs=p[3])
 	elif 4 == len(p):
 		p[0] = CmdNode(category='cmd', command='pyssh_add_user', lineno=p.lineno(2), child=None, adjs=dict(p[1], **(p[5])))
-	tNotNeedKeys = ['LOCAL_USER', 'SCP_PWD', 'TL', 'NTOL']
+	tNotNeedKeys = ['LOCAL_USER', 'SCP_PASSWD', 'TL', 'NTOL']
 	for k in tNotNeedKeys:
 		if k in p[0].adjs:
 			raise Exception('%s should not be used in ADD_USER in lineno:%d' % (k, p.lineno(2)))
@@ -288,7 +339,7 @@ def p_adjunct(p):
 			   | LOCAL_CMD
 			   | TAG SEP id_list
 			   | VAR SEP IDENTITY
-			   | SCP_PWD SEP STRING
+			   | SCP_PASSWD SEP STRING
 			   | ASSERT SEP STRING
 			   | ASSERT SEP INTEGER
 			   | TL SEP INTEGER'''
@@ -302,8 +353,8 @@ def p_adjunct(p):
 		p[0] = { 'TAG' : p[3] }
 	elif 4 == len(p) and 'VAR' == p[1]:
 		p[0] = { 'VAR' : p[3] }
-	elif 4 == len(p) and 'SCP_PWD' == p[1]:
-		p[0] = { 'SCP_PWD' : p[3] }
+	elif 4 == len(p) and 'SCP_PASSWD' == p[1]:
+		p[0] = { 'SCP_PASSWD' : p[3] }
 	elif 4 == len(p) and 'ASSERT' == p[1] and isinstance(p[3], str):
 		p[0] = { 'ASSERT' : p[3] }
 	elif 4 == len(p) and 'ASSERT' == p[1] and isinstance(p[3], int):
@@ -468,7 +519,7 @@ class CmdNode(object):
 				elif 0 == cmp('adjs', k):
 					tAdjStr = ''
 					for (s, t) in v.items():
-						if s in ['SCP_PWD', 'LOCAL_PWD']:
+						if s in ['SCP_PASSWD', 'LOCAL_PASSWD']:
 							continue
 						else:
 							tAdjStr = "%s , %r:%r" % (tAdjStr, s, t)
@@ -496,7 +547,7 @@ class CmdNode(object):
 				elif 0 == cmp('adjs', k):
 					tAdjStr = ''
 					for (s, t) in v.items():
-						if s in ['SCP_PWD', 'LOCAL_PWD']:
+						if s in ['SCP_PASSWD', 'LOCAL_PASSWD']:
 							continue
 						else:
 							tAdjStr = "%s , %r:%r" % (tAdjStr, s, t)
